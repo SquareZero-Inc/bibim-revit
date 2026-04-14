@@ -142,8 +142,25 @@ namespace Bibim.Core
             catch { return ""; }
         }
 
+        /// <summary>
+        /// Write path for rag_config.json — always %AppData%\BIBIM\ so writes succeed
+        /// even when the add-in is installed under Program Files (which is read-only).
+        /// </summary>
         private static string GetConfigPath()
         {
+            string appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+            string dir = Path.Combine(appData, "BIBIM");
+            Directory.CreateDirectory(dir);
+            return Path.Combine(dir, "rag_config.json");
+        }
+
+        /// <summary>
+        /// Read path — AppData first (user has saved keys), then installer default beside DLL.
+        /// </summary>
+        private static string GetReadConfigPath()
+        {
+            string appDataPath = GetConfigPath();
+            if (File.Exists(appDataPath)) return appDataPath;
             string assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             return Path.Combine(assemblyDir, "Config", "rag_config.json");
         }
@@ -225,8 +242,7 @@ namespace Bibim.Core
 
             try
             {
-                string assemblyDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-                string configPath = Path.Combine(assemblyDir, "Config", "rag_config.json");
+                string configPath = GetReadConfigPath();
 
                 if (!File.Exists(configPath))
                     throw new FileNotFoundException($"rag_config.json not found at: {configPath}");
