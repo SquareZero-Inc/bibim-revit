@@ -164,7 +164,7 @@ BIBIM is free and open source for individual and team use. If you need:
 - **Firm-specific prompt packs** tuned to your standards and workflows
 - **Priority support** and SLA
 
-→ Contact us at **bibim@squarezero.io**
+→ Contact us at **dev@sqzr.team**
 
 ---
 
@@ -172,4 +172,4 @@ BIBIM is free and open source for individual and team use. If you need:
 
 Apache 2.0 — see [LICENSE](LICENSE).
 
-Copyright 2026 [SquareZero Inc.](https://squarezero.io)
+Copyright 2026 [SquareZero Inc.](https://bibim.app/en)
