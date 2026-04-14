@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RevitAddIns>
+  <!-- BIBIM AI v2.4.0 — for Revit 2025+ (.NET 8) -->
+  <AddIn Type="Application">
+    <Name>BIBIM AI</Name>
+    <Assembly>C:\Program Files\BIBIM AI\net8.0\Bibim.Core.dll</Assembly>
+    <FullClassName>Bibim.Core.BibimApp</FullClassName>
+    <AddInId>B1B1B1B1-B1B1-B1B1-B1B1-B1B100030001</AddInId>
+    <VendorId>BIBIM</VendorId>
+    <VendorDescription>BIBIM AI — AI-powered Revit code generation</VendorDescription>
+  </AddIn>
+  <AddIn Type="Command">
+    <Name>BIBIM Show Panel</Name>
+    <Assembly>C:\Program Files\BIBIM AI\net8.0\Bibim.Core.dll</Assembly>
+    <FullClassName>Bibim.Core.BibimShowPanelCommand</FullClassName>
+    <AddInId>B1B1B1B1-B1B1-B1B1-B1B1-B1B100030002</AddInId>
+    <VendorId>BIBIM</VendorId>
+  </AddIn>
+</RevitAddIns>

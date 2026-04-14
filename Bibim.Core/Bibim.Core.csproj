@@ -1,0 +1,150 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- ============================================ -->
+  <!-- BIBIM — Revit Native C# Add-in               -->
+  <!-- Version managed in <Version> below            -->
+  <!-- Multi-target:                                 -->
+  <!--   .NET 4.8   (Revit 2022–2024)               -->
+  <!--   .NET 8.0   (Revit 2025–2026)               -->
+  <!--   .NET 10.0  (Revit 2027+)                   -->
+  <!-- ============================================ -->
+
+  <!-- net10.0-windows only activated for R2027 config — requires .NET 10 SDK -->
+  <PropertyGroup>
+    <TargetFrameworks Condition="'$(Configuration)' != 'R2027'">net48;net8.0-windows</TargetFrameworks>
+    <TargetFrameworks Condition="'$(Configuration)' == 'R2027'">net10.0-windows</TargetFrameworks>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <RootNamespace>Bibim.Core</RootNamespace>
+    <AssemblyName>Bibim.Core</AssemblyName>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
+    <Version>1.0.0</Version>
+    <BuildId Condition="'$(BuildId)' == ''">local</BuildId>
+    <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(Version)+$(BuildId)</InformationalVersion>
+    <Authors>BIBIM AI</Authors>
+    <Description>BIBIM — Revit Native C# Add-in with AI-powered code generation</Description>
+    <!-- MSB3277: net48 assembly version conflicts with Revit host DLLs — structural, not fixable -->
+    <MSBuildWarningsAsMessages>$(MSBuildWarningsAsMessages);MSB3277</MSBuildWarningsAsMessages>
+  </PropertyGroup>
+
+  <!-- Build configurations per Revit version -->
+  <!-- Default config (Debug/Release) targets 2026 as the current stable baseline -->
+  <PropertyGroup Condition="'$(Configuration)' == '' Or '$(Configuration)' == 'Debug' Or '$(Configuration)' == 'Release'">
+    <RevitVersion>2026</RevitVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'R2027'">
+    <RevitVersion>2027</RevitVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'R2026'">
+    <RevitVersion>2026</RevitVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'R2025'">
+    <RevitVersion>2025</RevitVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'R2024'">
+    <RevitVersion>2024</RevitVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'R2023'">
+    <RevitVersion>2023</RevitVersion>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'R2022'">
+    <RevitVersion>2022</RevitVersion>
+  </PropertyGroup>
+
+  <!-- Revit version + language conditional compilation -->
+  <PropertyGroup>
+    <DefineConstants>$(DefineConstants);REVIT_$(RevitVersion)</DefineConstants>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(AppLang)' == 'en'">
+    <DefineConstants>$(DefineConstants);APP_LANG_EN</DefineConstants>
+  </PropertyGroup>
+
+  <!-- ============================================ -->
+  <!-- REVIT API REFERENCES                         -->
+  <!-- Set REVIT_SDK_PATH env var or edit paths     -->
+  <!-- ============================================ -->
+
+  <PropertyGroup>
+    <RevitSdkPath Condition="'$(RevitSdkPath)' == ''">$(REVIT_SDK_PATH)</RevitSdkPath>
+    <RevitSdkPath Condition="'$(RevitSdkPath)' == ''">C:\Program Files\Autodesk\Revit $(RevitVersion)</RevitSdkPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="RevitAPI">
+      <HintPath>$(RevitSdkPath)\RevitAPI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="RevitAPIUI">
+      <HintPath>$(RevitSdkPath)\RevitAPIUI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+  <!-- ============================================ -->
+  <!-- NUGET PACKAGES                               -->
+  <!-- ============================================ -->
+
+  <!-- WebView2 — works on both .NET 4.8 and .NET 8 -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.2903.40" />
+  </ItemGroup>
+
+  <!-- Roslyn — for in-memory C# compilation -->
+  <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />
+  </ItemGroup>
+
+  <!-- Anthropic SDK — .NET Standard 2.0 compatible -->
+  <ItemGroup>
+    <PackageReference Include="Anthropic" Version="12.9.0" />
+  </ItemGroup>
+
+  <!-- JSON serialization -->
+  <!-- JSON serialization — Newtonsoft for both targets (Revit host compatibility) -->
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+  </ItemGroup>
+
+  <!-- System.Text.Json — pulled transitively by Anthropic SDK, not referenced directly -->
+  <!-- Removed explicit pin to avoid assembly loading conflicts in Revit host -->
+
+  <!-- Markdown rendering -->
+  <ItemGroup>
+    <PackageReference Include="Markdig" Version="0.38.0" />
+  </ItemGroup>
+
+  <!-- DPAPI for credential encryption (.NET 4.8 needs explicit ref) -->
+  <ItemGroup Condition="'$(TargetFramework)' == 'net48'">
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
+  </ItemGroup>
+
+  <!-- DI container — using lightweight manual implementation to avoid assembly loading issues -->
+
+  <!-- ============================================ -->
+  <!-- EMBEDDED RESOURCES                           -->
+  <!-- ============================================ -->
+
+  <ItemGroup>
+    <None Update="Config\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="Assets\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="wwwroot\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

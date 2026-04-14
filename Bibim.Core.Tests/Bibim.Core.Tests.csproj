@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <RootNamespace>Bibim.Core.Tests</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />
+    <PackageReference Include="Anthropic" Version="12.9.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="System.Text.Json" Version="10.0.2" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
+  </ItemGroup>
+
+  <!--
+    Link source files from Bibim.Core that DON'T depend on Revit SDK.
+    This allows testing Roslyn analyzers, code fixes, models, and utilities
+    without requiring RevitAPI.dll.
+  -->
+  <ItemGroup>
+    <Compile Include="..\Bibim.Core\Services\RoslynAnalyzerService.cs" Link="Linked\RoslynAnalyzerService.cs" />
+    <Compile Include="..\Bibim.Core\Services\RoslynCompilerService.cs" Link="Linked\RoslynCompilerService.cs" />
+    <Compile Include="..\Bibim.Core\Services\RevitApiXmlProvider.cs" Link="Linked\RevitApiXmlProvider.cs" />
+    <Compile Include="..\Bibim.Core\Services\ApiInspectorService.cs" Link="Linked\ApiInspectorService.cs" />
+    <Compile Include="..\Bibim.Core\Models\ChatMessage.cs" Link="Linked\ChatMessage.cs" />
+    <Compile Include="..\Bibim.Core\Models\SessionModels.cs" Link="Linked\SessionModels.cs" />
+    <Compile Include="..\Bibim.Core\Models\TaskFlowModels.cs" Link="Linked\TaskFlowModels.cs" />
+    <Compile Include="..\Bibim.Core\Common\Logger.cs" Link="Linked\Logger.cs" />
+    <Compile Include="..\Bibim.Core\Models\ExecutionModels.cs" Link="Linked\ExecutionModels.cs" />
+  </ItemGroup>
+
+</Project>

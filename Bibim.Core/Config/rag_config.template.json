@@ -1,0 +1,15 @@
+{
+  "claude_model": "claude-sonnet-4-6",
+  "api_keys": {
+    "claude_api_key": "YOUR_ANTHROPIC_API_KEY_HERE"
+  },
+  "validation": {
+    "gate_enabled": true,
+    "auto_fix_enabled": true,
+    "auto_fix_max_attempts": 2,
+    "verify_stage_enabled": false,
+    "enable_api_xml_hints": true,
+    "rollout_phase": "phase3"
+  },
+  "_comment": "Copy this file to rag_config.json and fill in your Anthropic API key. Get one at https://console.anthropic.com/"
+}

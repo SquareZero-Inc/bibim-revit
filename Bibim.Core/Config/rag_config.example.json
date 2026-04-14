@@ -1,0 +1,33 @@
+{
+  "detected_revit_version": "2025",
+  "detected_dynamo_version": "3.3",
+  "active_store": "fileSearchStores/YOUR_STORE_ID",
+  "claude_model": "claude-sonnet-4-6",
+  "gemini_model": "gemini-3-flash-preview",
+  "api_keys": {
+    "claude_api_key": "YOUR_CLAUDE_API_KEY",
+    "gemini_api_key": "YOUR_GEMINI_API_KEY"
+  },
+  "stores": {
+    "2022": "fileSearchStores/YOUR_2022_STORE_ID",
+    "2023": "fileSearchStores/YOUR_2023_STORE_ID",
+    "2024": "fileSearchStores/YOUR_2024_STORE_ID",
+    "2025": "fileSearchStores/YOUR_2025_STORE_ID",
+    "2025.1": "fileSearchStores/YOUR_2025_STORE_ID",
+    "2025.2": "fileSearchStores/YOUR_2025_STORE_ID",
+    "2025.3": "fileSearchStores/YOUR_20253_STORE_ID",
+    "2025.4": "fileSearchStores/YOUR_20253_STORE_ID",
+    "2026": "fileSearchStores/YOUR_2026_STORE_ID"
+  },
+  "fallback_store": "fileSearchStores/YOUR_2025_STORE_ID",
+  "fallback_version": "2025",
+  "validation": {
+    "gate_enabled": true,
+    "auto_fix_enabled": true,
+    "auto_fix_max_attempts": 2,
+    "verify_stage_enabled": false,
+    "enable_api_xml_hints": true,
+    "rollout_phase": "phase3"
+  },
+  "_comment": "Copy this file to rag_config.json and fill in your actual keys. Never commit rag_config.json."
+}

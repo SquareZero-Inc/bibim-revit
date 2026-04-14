@@ -1,0 +1,40 @@
+
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Bibim.Core", "Bibim.Core\Bibim.Core.csproj", "{A1B1B1M0-V300-0001-0000-000000000001}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Bibim.Core.Tests", "Bibim.Core.Tests\Bibim.Core.Tests.csproj", "{A1B1B1M0-V300-TEST-0000-000000000002}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+		R2022|Any CPU = R2022|Any CPU
+		R2023|Any CPU = R2023|Any CPU
+		R2024|Any CPU = R2024|Any CPU
+		R2025|Any CPU = R2025|Any CPU
+		R2026|Any CPU = R2026|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A1B1B1M0-V300-0001-0000-000000000001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.R2022|Any CPU.ActiveCfg = R2022|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.R2022|Any CPU.Build.0 = R2022|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.R2023|Any CPU.ActiveCfg = R2023|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.R2023|Any CPU.Build.0 = R2023|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.R2024|Any CPU.ActiveCfg = R2024|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.R2024|Any CPU.Build.0 = R2024|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.R2025|Any CPU.ActiveCfg = R2025|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.R2025|Any CPU.Build.0 = R2025|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.R2026|Any CPU.ActiveCfg = R2026|Any CPU
+		{A1B1B1M0-V300-0001-0000-000000000001}.R2026|Any CPU.Build.0 = R2026|Any CPU
+		{A1B1B1M0-V300-TEST-0000-000000000002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1B1B1M0-V300-TEST-0000-000000000002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1B1B1M0-V300-TEST-0000-000000000002}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1B1B1M0-V300-TEST-0000-000000000002}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal
