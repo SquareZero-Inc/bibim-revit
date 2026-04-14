@@ -55,7 +55,7 @@ Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; \
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
-Type: files; Name: "{commonappdata}\Autodesk\Revit\Addins\2027\Bibim.Core.addin"
+Type: files; Name: "{commonpf}\Autodesk\Revit\Addins\2027\Bibim.Core.addin"
 Type: files; Name: "{commonappdata}\Autodesk\Revit\Addins\2026\Bibim.Core.addin"
 Type: files; Name: "{commonappdata}\Autodesk\Revit\Addins\2025\Bibim.Core.addin"
 Type: files; Name: "{commonappdata}\Autodesk\Revit\Addins\2024\Bibim.Core.addin"
@@ -113,7 +113,11 @@ var
   AssemblyPath: string;
   Content: string;
 begin
-  ManifestPath := ExpandConstant('{commonappdata}\Autodesk\Revit\Addins\' + Year + '\Bibim.Core.addin');
+  // Revit 2027+ changed all-users addin path to Program Files
+  if Year = '2027' then
+    ManifestPath := ExpandConstant('{commonpf}\Autodesk\Revit\Addins\' + Year + '\Bibim.Core.addin')
+  else
+    ManifestPath := ExpandConstant('{commonappdata}\Autodesk\Revit\Addins\' + Year + '\Bibim.Core.addin');
   AssemblyPath := AddBackslash(ExpandConstant('{app}')) + Year + '\Bibim.Core.dll';
 
   if not FileExists(AssemblyPath) then
