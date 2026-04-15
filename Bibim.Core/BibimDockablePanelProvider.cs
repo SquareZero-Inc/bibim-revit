@@ -1049,6 +1049,13 @@ Rename / Renumber:
 Workset:
 - Which workset to assign new elements to (ask only if workset names appear in [RESOLVED REVIT CONTEXT])
 
+── DISTANCE / PROXIMITY MEASUREMENT ──
+Any task that compares, filters, or measures distance between two element types (e.g. ""doors within X mm of walls"", ""columns closer than Y mm to beams""):
+- Reference point/line on element A: bounding box face / origin point / specific geometry face / connector
+- Reference point/line on element B: same options
+  → If the user specifies a sub-geometry reference (e.g. ""the outer edge of the window frame""), ask which specific face or sub-component to use, since family geometry varies per project.
+- Distance direction: closest point in any direction / perpendicular distance / horizontal only / vertical only
+
 ── UNITS & COORDINATES ──
 Units / Coordinates:
 - Numeric input unit: millimeters / feet / project units (ask only when the unit is ambiguous from context)
