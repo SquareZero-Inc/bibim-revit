@@ -54,7 +54,7 @@ Open Revit → BIBIM AI tab → click the gear icon (⚙) in the top-right corne
 Cost estimates assume a typical Revit query (~5,000 input tokens + ~1,000 output tokens).
 Actual cost depends on context size (active view, selection, Revit version API hints).
 
-Alternatively, set it in `Config/rag_config.json` before launching Revit:
+Alternatively, edit `%AppData%\BIBIM\rag_config.json` directly (created after first launch):
 
 ```json
 {
@@ -108,7 +108,7 @@ The build output lands in `Bibim.Core\bin\Release\<year>\`.
 | `validation.auto_fix_enabled` | No | `true` | Attempt auto-fix on analyzer warnings |
 | `validation.auto_fix_max_attempts` | No | `2` | Max auto-fix retry rounds |
 
-`rag_config.json` is gitignored. Copy from `Config/rag_config.template.json` to get started.
+`rag_config.json` is written to `%AppData%\BIBIM\rag_config.json` when you save the API key via the Settings panel. It is gitignored. For manual setup, copy from `Config/rag_config.template.json`.
 
 ---
 
@@ -139,12 +139,14 @@ When something goes wrong, BIBIM writes debug artifacts to two local locations:
 | File / Folder | Contents |
 |---|---|
 | `%USERPROFILE%\bibim_v3_debug.txt` | Main log — all events, errors, and stack traces. Rotates at 10 MB (`.bak` kept). |
+| `%AppData%\BIBIM\rag_config.json` | User config file — API keys, selected model, RAG store IDs. |
 | `%AppData%\BIBIM\debug\codegen\YYYYMMDD\` | Per-run artifacts: system prompt, task prompt, raw LLM output, compiled `.cs` files, and compiler diagnostics. Created for every code-generation run. |
 
-**To open the log folder quickly:**
+**To open quickly (Win+R):**
 ```
-Win+R → %USERPROFILE%\bibim_v3_debug.txt
-Win+R → %AppData%\BIBIM\debug\codegen
+%USERPROFILE%\bibim_v3_debug.txt
+%AppData%\BIBIM\rag_config.json
+%AppData%\BIBIM\debug\codegen
 ```
 
 When filing a GitHub issue, please attach:
