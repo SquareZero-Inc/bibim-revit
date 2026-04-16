@@ -1,0 +1,66 @@
+name: Bug Report
+description: Something isn't working
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing: check the [Revit journal log](%LOCALAPPDATA%\Autodesk\Revit\) — it usually has the crash reason.
+
+  - type: dropdown
+    id: revit_version
+    attributes:
+      label: Revit version
+      options:
+        - "2022"
+        - "2023"
+        - "2024"
+        - "2025"
+        - "2026"
+        - "2027"
+    validations:
+      required: true
+
+  - type: input
+    id: bibim_version
+    attributes:
+      label: BIBIM version
+      placeholder: "e.g. 1.0.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: language
+    attributes:
+      label: Build language
+      options:
+        - KR
+        - EN
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, what actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open Revit project with ...
+        2. Send message "..."
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: journal
+    attributes:
+      label: Journal log excerpt (if applicable)
+      description: Paste the relevant section from the Revit journal log
+      render: text

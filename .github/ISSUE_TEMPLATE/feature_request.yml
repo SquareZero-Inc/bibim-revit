@@ -1,0 +1,38 @@
+name: Feature Request
+description: Propose a new tool, behavior, or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the Revit workflow or task this would improve.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What would you like BIBIM to do? Be as specific as you can — relevant Revit API classes, expected behavior, etc.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Anything you've tried or considered instead?
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      options:
+        - New Revit API tool
+        - Planner / prompt behavior
+        - UI / panel
+        - Build / install
+        - Other
+    validations:
+      required: true
