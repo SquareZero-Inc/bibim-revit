@@ -152,6 +152,9 @@ const STRINGS = {
     geminiKeySaved: '저장되었습니다',
     geminiKeySaveError: '저장 실패',
     geminiKeyHelp: 'aistudio.google.com에서 발급. RAG가 없으면 일반 코드 생성만 동작합니다.',
+    reportBug: '버그 신고',
+    suggestFeature: '기능 제안',
+    feedbackSectionTitle: '피드백',
   },
   en: {
     history: 'History',
@@ -300,6 +303,9 @@ const STRINGS = {
     geminiKeySaved: 'Saved',
     geminiKeySaveError: 'Save failed',
     geminiKeyHelp: 'Get key at aistudio.google.com. Without RAG, standard code generation still works.',
+    reportBug: 'Report a Bug',
+    suggestFeature: 'Suggest a Feature',
+    feedbackSectionTitle: 'Feedback',
   },
 } as const;
 

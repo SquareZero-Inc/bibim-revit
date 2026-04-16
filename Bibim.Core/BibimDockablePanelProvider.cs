@@ -2557,6 +2557,20 @@ Constraints:
                 if (!string.IsNullOrWhiteSpace(path) && System.IO.Directory.Exists(path))
                     System.Diagnostics.Process.Start("explorer.exe", path);
             });
+
+            RegisterSyncHandler("open_url", payload =>
+            {
+                string url = payload["url"]?.ToString() ?? "";
+                if (!string.IsNullOrWhiteSpace(url)
+                    && (url.StartsWith("https://") || url.StartsWith("http://")))
+                {
+                    System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                    {
+                        FileName = url,
+                        UseShellExecute = true
+                    });
+                }
+            });
         }
 
         private void SendApiKeyStatus()

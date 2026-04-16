@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { t } from '../i18n';
 
+const FEEDBACK_URL_BUG = 'https://bibim.app/feedback?type=bug';
+const FEEDBACK_URL_FEATURE = 'https://bibim.app/feedback?type=feature';
+
 // Claude models with display labels and estimated cost per typical Revit query
 const CLAUDE_MODELS = [
   {
@@ -35,6 +38,7 @@ interface Props {
   geminiMasked: string;
   onSaveGeminiApiKey: (key: string) => void;
   geminiSaveResult: 'idle' | 'saved' | 'error';
+  onOpenUrl: (url: string) => void;
 }
 
 export default function SettingsPanel({
@@ -48,6 +52,7 @@ export default function SettingsPanel({
   geminiMasked,
   onSaveGeminiApiKey,
   geminiSaveResult,
+  onOpenUrl,
 }: Props) {
   const [open, setOpen] = useState(false);
   const [inputKey, setInputKey] = useState('');
@@ -206,6 +211,26 @@ export default function SettingsPanel({
               saveLabel={t('apiKeySave')}
             />
             <HelpText>{t('geminiKeyHelp')}</HelpText>
+          </Section>
+
+          <Divider />
+
+          {/* ── Section: Feedback ── */}
+          <Section title={t('feedbackSectionTitle')}>
+            <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
+              <button
+                onClick={() => onOpenUrl(FEEDBACK_URL_BUG)}
+                style={feedbackButtonStyle}
+              >
+                🐛 {t('reportBug')}
+              </button>
+              <button
+                onClick={() => onOpenUrl(FEEDBACK_URL_FEATURE)}
+                style={feedbackButtonStyle}
+              >
+                💡 {t('suggestFeature')}
+              </button>
+            </div>
           </Section>
 
         </div>
@@ -388,4 +413,16 @@ const saveButtonStyle: React.CSSProperties = {
   color: '#fff',
   fontSize: 'var(--text-sm)',
   cursor: 'pointer',
+};
+
+const feedbackButtonStyle: React.CSSProperties = {
+  flex: 1,
+  padding: '6px 8px',
+  background: 'var(--color-bg-tertiary)',
+  border: '1px solid var(--color-border)',
+  borderRadius: 'var(--radius-md)',
+  color: 'var(--color-text-muted)',
+  fontSize: 'var(--text-xs)',
+  cursor: 'pointer',
+  textAlign: 'center' as const,
 };

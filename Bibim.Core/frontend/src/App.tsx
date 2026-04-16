@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { t } from './i18n';
 import { useChat } from './hooks/useChat';
+import { sendToBackend } from './bridge';
 import ChatPanel from './components/ChatPanel';
 import HistoryPanel from './components/HistoryPanel';
 import CodeLibraryPanel from './components/CodeLibraryPanel';
@@ -128,6 +129,7 @@ export default function App() {
               geminiMasked={chat.geminiMasked}
               onSaveGeminiApiKey={chat.saveGeminiApiKey}
               geminiSaveResult={chat.geminiKeySaveResult}
+              onOpenUrl={(url) => sendToBackend('open_url', { url })}
             />
           </div>
         </header>
