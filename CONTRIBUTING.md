@@ -28,7 +28,7 @@ If BIBIM crashes on startup, the Revit journal log is usually more useful than t
 Before proposing something, ask yourself: is this a **generic BIM workflow** or a **company-specific standard**?
 
 - **Generic BIM workflow** (e.g. "filter elements by shared parameter value", "rename views by sheet"): open a GitHub Issue with the `enhancement` label.
-- **Company-specific customization** (e.g. your firm's drawing number format, internal spec templates, custom RAG corpus): this repo is not the right place. Contact us at **dev@sqzr.team** for enterprise options.
+- **Company-specific customization** (e.g. your firm's drawing number format, internal spec templates, custom RAG corpus): this repo is not the right place. Contact us at **seokwoo.hong@sqzr.team** for enterprise options.
 
 This distinction matters — PRs that hardcode company-specific logic into core behavior won't be merged.
 

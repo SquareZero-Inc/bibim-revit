@@ -4,7 +4,7 @@
 
 **Do not open a public issue for security vulnerabilities.**
 
-Email: security@squarezero.kr
+Email: dev@sqzr.team
 
 Include:
 - Description of the vulnerability

@@ -166,7 +166,7 @@ BIBIM is free and open source for individual and team use. If you need:
 - **Firm-specific prompt packs** tuned to your standards and workflows
 - **Priority support** and SLA
 
-→ Contact us at **dev@sqzr.team**
+→ Contact us at **seokwoo.hong@sqzr.team**
 
 ---
 
