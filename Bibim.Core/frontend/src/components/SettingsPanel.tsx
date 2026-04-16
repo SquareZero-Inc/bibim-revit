@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { t } from '../i18n';
 
-const FEEDBACK_URL_BUG = 'https://bibim.app/feedback?type=bug';
-const FEEDBACK_URL_FEATURE = 'https://bibim.app/feedback?type=feature';
+const FEEDBACK_URL_BUG = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
+const FEEDBACK_URL_FEATURE = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
 
 // Claude models with display labels and estimated cost per typical Revit query
 const CLAUDE_MODELS = [

@@ -40,7 +40,7 @@ namespace Bibim.Core
         private CancellationTokenSource _streamingCts;
         private static readonly System.Net.Http.HttpClient _downloadHttpClient = new System.Net.Http.HttpClient();
         // Sliding window: pass at most this many message turns to the LLM (oldest dropped)
-        private const int ChatHistoryMaxTurns = 20;
+        private const int ChatHistoryMaxTurns = BibimConstants.ChatHistoryMaxTurns;
 
         // Session management
         private LocalSessionManager _sessionManager;
@@ -48,8 +48,16 @@ namespace Bibim.Core
         private string _activeSessionId;
         private SessionContext _sessionContext;
 
-        // Last code generation result — needed for execute (dryrun/commit)
-        private volatile CodeGenerationResult _lastCodeGenResult;
+        // Last code generation result — needed for execute (dryrun/commit).
+        // Accessed from both UI thread and background task threads.
+        // Property wraps lock so all call sites remain unchanged.
+        private CodeGenerationResult _lastCodeGenResultValue;
+        private readonly object _lastCodeGenResultLock = new object();
+        private CodeGenerationResult _lastCodeGenResult
+        {
+            get { lock (_lastCodeGenResultLock) return _lastCodeGenResultValue; }
+            set { lock (_lastCodeGenResultLock) _lastCodeGenResultValue = value; }
+        }
         private LastAppliedAction _lastAppliedAction;
         private List<string> _lastRevitWarnings;
         private readonly Dictionary<string, LastAppliedAction> _messageActions =
@@ -60,7 +68,7 @@ namespace Bibim.Core
 
         // Roslyn analyzer — BIBIM001-005 custom analyzers
         private readonly RoslynAnalyzerService _analyzerService = new RoslynAnalyzerService();
-        private const int PlannerContextWindow = 8;
+        private const int PlannerContextWindow = BibimConstants.PlannerContextWindow;
         private int _suppressStreamingDeltaCount;
         private string _pendingLibrarySnippetId;
 
