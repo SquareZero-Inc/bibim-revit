@@ -7,7 +7,7 @@
   #define MyAppVersion "0.0.0"
 #endif
 #define MyAppPublisher "SquareZero Inc."
-#define MyAppURL "https://github.com/sqzrDev/BIBIM_AI"
+#define MyAppURL "https://github.com/SquareZero-Inc/bibim-revit"
 #ifndef MyBuildId
   #define MyBuildId "manual"
 #endif
@@ -27,6 +27,7 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
+LicenseFile=..\LICENSE
 SetupIconFile=Assets\Icons\bibim-icon-blue.ico
 UninstallDisplayIcon={app}\bibim-icon-blue.ico
 PrivilegesRequired=admin
@@ -169,7 +170,8 @@ begin
       '1. Launch Revit.' + #13#10 +
       '2. Click the BIBIM tab in the top ribbon.' + #13#10 +
       '3. Click [Open BIBIM] to open the panel.' + #13#10 +
-      '4. Sign in and you''re ready to go.',
+      '4. Enter your Anthropic API key in Settings (⚙) to get started.' + #13#10 + #13#10 +
+      'Get your API key at: https://console.anthropic.com',
       mbInformation, MB_OK);
   end;
 end;
