@@ -138,6 +138,14 @@ namespace Bibim.Core
                 _bridge.Initialize();
                 RegisterBridgeHandlers();
 
+                // Subscribe to background version check completion.
+                // PostMessage is dispatcher-safe so firing from background thread is fine.
+                BibimApp.VersionCheckCompleted += OnVersionCheckCompleted;
+                // If the check already finished before we subscribed, push immediately.
+                var pendingUpdate = BibimApp.LastVersionCheckResult;
+                if (pendingUpdate != null)
+                    SendUpdateInfo(pendingUpdate);
+
                 // Initialize session manager. The frontend requests bootstrap state
                 // after its bridge handlers are registered, which is more reliable
                 // than sending messages before the page has loaded.
@@ -227,6 +235,7 @@ namespace Bibim.Core
         {
             try
             {
+                BibimApp.VersionCheckCompleted -= OnVersionCheckCompleted;
                 _streamingCts?.Cancel();
                 _streamingCts?.Dispose();
                 _bridge?.Dispose();
@@ -2651,6 +2660,11 @@ Constraints:
             }
         }
 
+        private void OnVersionCheckCompleted(VersionCheckResult result)
+        {
+            SendUpdateInfo(result);
+        }
+
         private void SendUpdateInfo(VersionCheckResult result)
         {
             try
@@ -3020,39 +3034,20 @@ Constraints:
         private string BuildSystemPrompt(bool isCodeGeneration)
         {
             string revitVersion = ConfigService.GetEffectiveRevitVersion();
-
-            // Base prompt with Revit version awareness
-            string prompt = CodeGenSystemPrompt.Build(revitVersion, isCodeGeneration);
-
-            // RAG context is injected asynchronously via BuildSystemPromptAsync for code gen.
-            // For chat, append store identifier as a lightweight hint.
-            string ragStore = ConfigService.GetRagStoreForVersion(revitVersion);
-            if (!string.IsNullOrEmpty(ragStore))
-            {
-                string ragContext = $"[RAG Store: {ragStore} — Revit {revitVersion} API documentation]";
-                prompt += CodeGenSystemPrompt.AppendRagContext(ragContext);
-            }
-
-            return prompt;
+            return CodeGenSystemPrompt.Build(revitVersion, isCodeGeneration);
+            // RAG context injection disabled — search_revit_api tool removed from OSS release.
+            // GeminiRagService retained for future re-enablement.
         }
 
         /// <summary>
-        /// Build system prompt for plain chat (non-code-gen) with a static RAG store reference.
-        /// Code generation paths use GenerateWithToolsAsync + search_revit_api tool instead —
-        /// pre-RAG system prompt injection is not needed when Claude can query on demand.
+        /// Build system prompt for plain chat (non-code-gen).
+        /// RAG injection disabled in OSS release — see GeminiRagService for future re-enablement.
         /// </summary>
         private Task<string> BuildSystemPromptWithRagAsync(
             string queryContext, bool isCodeGeneration, CancellationToken ct)
         {
             string revitVersion = ConfigService.GetEffectiveRevitVersion();
-            string prompt = CodeGenSystemPrompt.Build(revitVersion, isCodeGeneration);
-
-            string ragStore = ConfigService.GetRagStoreForVersion(revitVersion);
-            if (!string.IsNullOrEmpty(ragStore))
-                prompt += CodeGenSystemPrompt.AppendRagContext(
-                    $"[RAG Store: {ragStore} — Revit {revitVersion} API documentation]");
-
-            return Task.FromResult(prompt);
+            return Task.FromResult(CodeGenSystemPrompt.Build(revitVersion, isCodeGeneration));
         }
 
         /// <summary>

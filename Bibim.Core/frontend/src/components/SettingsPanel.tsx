@@ -25,7 +25,13 @@ const CLAUDE_MODELS = [
     cost: '~$0.20 / 1회',
     note: '고품질 · 복잡한 작업',
   },
-] as const;
+  {
+    id: 'claude-opus-4-7',
+    label: 'Opus 4.7',
+    cost: '~$0.20 / 1회',
+    note: '최신 · 에이전트 작업',
+  },
+];
 
 interface Props {
   apiKeyConfigured: boolean;
@@ -190,26 +196,27 @@ export default function SettingsPanel({
 
           <Divider />
 
-          {/* ── Section: Gemini API Key (optional) ── */}
+          {/* ── Section: Gemini API Key (disabled — RAG coming soon) ── */}
           <Section title={t('geminiSection')}>
-            <StatusRow configured={geminiConfigured} label={geminiConfigured ? `${t('geminiKeyConfigured')}: ${geminiMasked}` : t('geminiKeyNotConfigured')} />
-            <KeyInputRow
-              value={geminiInput}
-              show={showGemini}
-              placeholder={t('geminiKeyPlaceholder')}
-              onChange={setGeminiInput}
-              onToggleShow={() => setShowGemini(p => !p)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveGemini(); }}
-              showLabel={showGemini ? t('apiKeyHideKey') : t('apiKeyShowKey')}
-            />
-            <SaveRow
-              disabled={!geminiInput.trim()}
-              onSave={handleSaveGemini}
-              result={geminiSaveResult}
-              savedText={t('geminiKeySaved')}
-              errorText={t('geminiKeySaveError')}
-              saveLabel={t('apiKeySave')}
-            />
+            <div style={{ opacity: 0.45, pointerEvents: 'none' }}>
+              <KeyInputRow
+                value={geminiInput}
+                show={showGemini}
+                placeholder={t('geminiKeyPlaceholder')}
+                onChange={setGeminiInput}
+                onToggleShow={() => setShowGemini(p => !p)}
+                onKeyDown={() => {}}
+                showLabel={showGemini ? t('apiKeyHideKey') : t('apiKeyShowKey')}
+              />
+              <SaveRow
+                disabled={true}
+                onSave={() => {}}
+                result="idle"
+                savedText={t('geminiKeySaved')}
+                errorText={t('geminiKeySaveError')}
+                saveLabel={t('apiKeySave')}
+              />
+            </div>
             <HelpText>{t('geminiKeyHelp')}</HelpText>
           </Section>
 

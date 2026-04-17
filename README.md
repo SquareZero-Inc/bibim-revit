@@ -110,6 +110,16 @@ The build output lands in `Bibim.Core\bin\Release\<year>\`.
 
 `rag_config.json` is written to `%AppData%\BIBIM\rag_config.json` when you save the API key via the Settings panel. It is gitignored. For manual setup, copy from `Config/rag_config.template.json`.
 
+### RAG (Revit API doc search) — temporarily disabled
+
+BIBIM previously used Gemini fileSearch to retrieve version-specific Revit API documentation at code generation time (`search_revit_api` tool). This feature is **temporarily disabled** in the current OSS release.
+
+**Why:** The RAG corpus (Revit API docs indexed per version) was hosted under a private SquareZero Google Cloud project. During the OSS transition, the store access model needs to be reworked so that it is either self-hostable or served via a public endpoint.
+
+**Impact:** Code generation still works normally. Claude's built-in Revit API knowledge combined with the Roslyn validation + auto-fix loop handles the vast majority of cases well. You may occasionally see a hallucinated API name that Roslyn catches and corrects.
+
+**Coming soon:** A public RAG endpoint or self-hostable corpus setup will be added in an upcoming release.
+
 ---
 
 ## Project structure

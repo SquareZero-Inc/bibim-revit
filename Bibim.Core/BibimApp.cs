@@ -44,6 +44,12 @@ namespace Bibim.Core
         /// </summary>
         internal static VersionCheckResult LastVersionCheckResult { get; set; }
 
+        /// <summary>
+        /// Fired on a background thread when the startup version check finds a newer version.
+        /// Subscribers (e.g. BibimDockablePanelProvider) must be thread-safe.
+        /// </summary>
+        internal static event Action<VersionCheckResult> VersionCheckCompleted;
+
         internal static BibimApp Instance { get; private set; }
         internal static UIControlledApplication UiCtrlApp { get; private set; }
         internal static UIApplication CurrentUiApp { get; private set; }
@@ -184,6 +190,7 @@ namespace Bibim.Core
                                 LastVersionCheckResult = result;
                                 Logger.Log("BibimApp",
                                     $"Update available: {result.LatestVersion} (mandatory={result.IsMandatory})");
+                                VersionCheckCompleted?.Invoke(result);
                             }
                         }
                         catch (Exception vcEx)

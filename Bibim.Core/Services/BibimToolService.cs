@@ -47,24 +47,8 @@ namespace Bibim.Core
         {
             return new JArray
             {
-                new JObject
-                {
-                    ["name"] = "search_revit_api",
-                    ["description"] = "Search Revit API documentation to verify that a class, method, or property exists and get its correct signature for the target Revit version. Use this BEFORE writing any Revit API call you are unsure about.",
-                    ["input_schema"] = new JObject
-                    {
-                        ["type"] = "object",
-                        ["properties"] = new JObject
-                        {
-                            ["query"] = new JObject
-                            {
-                                ["type"] = "string",
-                                ["description"] = "The Revit API class, method, or property to look up (e.g. 'PDFExportOptions.FileName', 'FilteredElementCollector.OfCategory', 'Wall.Width')"
-                            }
-                        },
-                        ["required"] = new JArray { "query" }
-                    }
-                },
+                // search_revit_api (RAG) tool disabled — RAG store not yet available in OSS release.
+                // GeminiRagService code retained for future re-enablement.
                 new JObject
                 {
                     ["name"] = "run_roslyn_check",
