@@ -4,33 +4,12 @@ import { t } from '../i18n';
 const FEEDBACK_URL_BUG = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
 const FEEDBACK_URL_FEATURE = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
 
-// Claude models with display labels and estimated cost per typical Revit query
+// Claude models — labels/notes localised via t() at render time
 const CLAUDE_MODELS = [
-  {
-    id: 'claude-haiku-4-5-20251001',
-    label: 'Haiku 4.5',
-    cost: '~$0.01 / 1회',
-    note: '빠름 · 간단한 작업',
-  },
-  {
-    id: 'claude-sonnet-4-6',
-    label: 'Sonnet 4.6',
-    cost: '~$0.04 / 1회',
-    note: '추천 · 균형',
-    recommended: true,
-  },
-  {
-    id: 'claude-opus-4-6',
-    label: 'Opus 4.6',
-    cost: '~$0.20 / 1회',
-    note: '고품질 · 복잡한 작업',
-  },
-  {
-    id: 'claude-opus-4-7',
-    label: 'Opus 4.7',
-    cost: '~$0.20 / 1회',
-    note: '최신 · 에이전트 작업',
-  },
+  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5',  cost: '~$0.01', noteKey: 'modelNoteHaiku'  as const },
+  { id: 'claude-sonnet-4-6',         label: 'Sonnet 4.6', cost: '~$0.04', noteKey: 'modelNoteSonnet' as const, recommended: true },
+  { id: 'claude-opus-4-6',           label: 'Opus 4.6',   cost: '~$0.20', noteKey: 'modelNoteOpus46' as const },
+  { id: 'claude-opus-4-7',           label: 'Opus 4.7',   cost: '~$0.20', noteKey: 'modelNoteOpus47' as const },
 ];
 
 interface Props {
@@ -178,8 +157,8 @@ export default function SettingsPanel({
                     key={m.id}
                     id={m.id}
                     label={m.label}
-                    cost={m.cost}
-                    note={m.note}
+                    cost={`${m.cost} ${t('modelCostUnit')}`}
+                    note={t(m.noteKey)}
                     recommended={'recommended' in m && m.recommended}
                     selected={claudeModel === m.id}
                     onSelect={() => onSaveModel(m.id)}
