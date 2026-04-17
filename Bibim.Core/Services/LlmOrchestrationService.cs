@@ -58,7 +58,7 @@ namespace Bibim.Core
             _apiKey = apiKey;
             _client = new AnthropicClient() { ApiKey = apiKey };
             _compiler = compiler ?? throw new ArgumentNullException(nameof(compiler));
-            _model = model ?? ConfigService.GetRagConfig().ClaudeModel;
+            _model = model ?? ConfigService.GetRagConfig()?.ClaudeModel ?? "claude-sonnet-4-6";
         }
 
         /// <summary>

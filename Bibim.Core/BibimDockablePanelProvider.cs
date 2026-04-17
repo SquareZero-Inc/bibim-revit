@@ -114,10 +114,10 @@ namespace Bibim.Core
             };
 
             // Initialize WebView2 asynchronously after panel is set up
-            InitializeWebViewAsync();
+            _ = InitializeWebViewAsync();
         }
 
-        private async void InitializeWebViewAsync()
+        private async Task InitializeWebViewAsync()
         {
             if (_initialized) return;
 
@@ -233,6 +233,21 @@ namespace Bibim.Core
                 _webView?.Dispose();
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Atomically replaces _streamingCts and cancels/disposes the old one.
+        /// Returns a CancellationToken from the new source.
+        /// Using Interlocked.Exchange prevents a race between UI-thread replacement
+        /// and any background thread that reads the field directly.
+        /// </summary>
+        private CancellationToken ReplaceCts()
+        {
+            var newCts = new CancellationTokenSource();
+            var old = Interlocked.Exchange(ref _streamingCts, newCts);
+            old?.Cancel();
+            old?.Dispose();
+            return newCts.Token;
         }
 
         private string UiText(string english, string korean)
@@ -2851,10 +2866,7 @@ Constraints:
             var sw = System.Diagnostics.Stopwatch.StartNew();
 
             // Cancel any previous streaming
-            _streamingCts?.Cancel();
-            _streamingCts?.Dispose();
-            _streamingCts = new CancellationTokenSource();
-            var ct = _streamingCts.Token;
+            var ct = ReplaceCts();
 
             try
             {
@@ -3194,10 +3206,7 @@ Constraints:
 
         private async Task GenerateCodeFromTaskAsync(TaskState task, bool runAfterGeneration, string additionalContext = null)
         {
-            _streamingCts?.Cancel();
-            _streamingCts?.Dispose();
-            _streamingCts = new CancellationTokenSource();
-            var ct = _streamingCts.Token;
+            var ct = ReplaceCts();
             var sw = System.Diagnostics.Stopwatch.StartNew();
             bool suppressStreaming = task != null;
             string debugDirectory = null;
@@ -3410,10 +3419,7 @@ Constraints:
         /// </summary>
         private async Task GenerateCodeFromSpecAsync()
         {
-            _streamingCts?.Cancel();
-            _streamingCts?.Dispose();
-            _streamingCts = new CancellationTokenSource();
-            var ct = _streamingCts.Token;
+            var ct = ReplaceCts();
             var sw = System.Diagnostics.Stopwatch.StartNew();
             Interlocked.Increment(ref _suppressStreamingDeltaCount);
 
