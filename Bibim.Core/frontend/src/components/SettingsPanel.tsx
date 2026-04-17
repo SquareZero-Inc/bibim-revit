@@ -54,10 +54,10 @@ export default function SettingsPanel({
   saveResult,
   claudeModel,
   onSaveModel,
-  geminiConfigured,
-  geminiMasked,
-  onSaveGeminiApiKey,
-  geminiSaveResult,
+  geminiConfigured: _geminiConfigured,
+  geminiMasked: _geminiMasked,
+  onSaveGeminiApiKey: _onSaveGeminiApiKey,
+  geminiSaveResult: _geminiSaveResult,
   onOpenUrl,
 }: Props) {
   const [open, setOpen] = useState(false);
@@ -95,11 +95,6 @@ export default function SettingsPanel({
     onSaveApiKey(trimmed);
   };
 
-  const handleSaveGemini = () => {
-    const trimmed = geminiInput.trim();
-    if (!trimmed) return;
-    onSaveGeminiApiKey(trimmed);
-  };
 
   return (
     <div ref={panelRef} style={{ position: 'relative' }}>
