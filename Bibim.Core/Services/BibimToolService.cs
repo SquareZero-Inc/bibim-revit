@@ -47,8 +47,30 @@ namespace Bibim.Core
         {
             return new JArray
             {
-                // search_revit_api (RAG) tool disabled — RAG store not yet available in OSS release.
-                // GeminiRagService code retained for future re-enablement.
+                // search_revit_api: local BM25 RAG — indexes RevitAPI.xml from Revit installation.
+                // Replaces GeminiRagService (which required a SquareZero-owned Gemini store).
+                // Index is built lazily on first call; subsequent calls use the cached BM25 engine.
+                new JObject
+                {
+                    ["name"] = "search_revit_api",
+                    ["description"] = "Search the local Revit API documentation index (built from RevitAPI.xml). " +
+                        "Use this to verify class names, method signatures, constructor parameters, and property names " +
+                        "before writing code. Call with a concise English query like the class or method name you need. " +
+                        "STRICT LIMIT: maximum 2 calls per request.",
+                    ["input_schema"] = new JObject
+                    {
+                        ["type"] = "object",
+                        ["properties"] = new JObject
+                        {
+                            ["query"] = new JObject
+                            {
+                                ["type"] = "string",
+                                ["description"] = "English search query, e.g. 'PDFExportOptions', 'RevisionCloud create', 'FilteredElementCollector OfClass'"
+                            }
+                        },
+                        ["required"] = new JArray { "query" }
+                    }
+                },
                 new JObject
                 {
                     ["name"] = "run_roslyn_check",
@@ -210,7 +232,10 @@ namespace Bibim.Core
                 return "[Tool Error] 'query' parameter is required.";
 
             string revitVersion = ConfigService.GetEffectiveRevitVersion();
-            var result = await GeminiRagService.FetchAsync(query, revitVersion, ct);
+
+            // Use local BM25 RAG (indexes RevitAPI.xml from Revit installation).
+            // Falls back to GeminiRagService if local index is unavailable.
+            var result = await LocalRevitRagService.FetchAsync(query, revitVersion, ct);
 
             // Prepend timing header — auto-recorded in tool_turn_XX_search_revit_api_result.txt
             string header = $"[RAG: {result.ElapsedMs}ms, {result.Status}]\n";
