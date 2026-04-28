@@ -4,88 +4,90 @@ import { t } from '../i18n';
 const FEEDBACK_URL_BUG = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
 const FEEDBACK_URL_FEATURE = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
 
-// Claude models — labels/notes localised via t() at render time
-const CLAUDE_MODELS = [
-  { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5',  cost: '~$0.01', noteKey: 'modelNoteHaiku'  as const },
-  { id: 'claude-sonnet-4-6',         label: 'Sonnet 4.6', cost: '~$0.04', noteKey: 'modelNoteSonnet' as const, recommended: true },
-  { id: 'claude-opus-4-6',           label: 'Opus 4.6',   cost: '~$0.20', noteKey: 'modelNoteOpus46' as const },
-  { id: 'claude-opus-4-7',           label: 'Opus 4.7',   cost: '~$0.20', noteKey: 'modelNoteOpus47' as const },
+type Provider = 'anthropic' | 'openai' | 'gemini';
+type SaveResult = 'idle' | 'saved' | 'error';
+
+// Model catalogue exposed in v1.1.0. Order = display order.
+// Labels/notes localised via t() at render time.
+// `speed` is observed responsiveness on typical Revit codegen tasks (Apr 2026):
+//   '⚡⚡⚡' fast | '⚡⚡' medium | '⚡' slow
+type SpeedRating = '⚡⚡⚡' | '⚡⚡' | '⚡';
+
+const MODELS: ReadonlyArray<{
+  id: string;
+  label: string;
+  cost: string;
+  speed: SpeedRating;
+  speedKey: 'modelSpeedFast' | 'modelSpeedMedium' | 'modelSpeedSlow';
+  noteKey: 'modelNoteSonnet' | 'modelNoteOpus47' | 'modelNoteGpt55' | 'modelNoteGemini31Pro';
+  provider: Provider;
+  recommended?: boolean;
+}> = [
+  { id: 'claude-sonnet-4-6',     label: 'Claude Sonnet 4.6', cost: '~$0.04', speed: '⚡⚡⚡', speedKey: 'modelSpeedFast',   noteKey: 'modelNoteSonnet',       provider: 'anthropic', recommended: true },
+  { id: 'claude-opus-4-7',       label: 'Claude Opus 4.7',   cost: '~$0.20', speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteOpus47',       provider: 'anthropic' },
+  { id: 'gpt-5.5',                label: 'GPT-5.5',           cost: '~$0.08', speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteGpt55',        provider: 'openai' },
+  { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro',    cost: '~$0.03', speed: '⚡',    speedKey: 'modelSpeedSlow',   noteKey: 'modelNoteGemini31Pro',  provider: 'gemini' },
 ];
 
 interface Props {
-  apiKeyConfigured: boolean;
-  apiKeyMasked: string;
-  onSaveApiKey: (key: string) => void;
-  saveResult: 'idle' | 'saved' | 'error';
-  claudeModel: string;
-  onSaveModel: (modelId: string) => void;
+  // Anthropic
+  anthropicConfigured: boolean;
+  anthropicMasked: string;
+  onSaveAnthropicKey: (key: string) => void;
+  anthropicSaveResult: SaveResult;
+  // OpenAI
+  openaiConfigured: boolean;
+  openaiMasked: string;
+  onSaveOpenAiKey: (key: string) => void;
+  openaiSaveResult: SaveResult;
+  // Gemini
   geminiConfigured: boolean;
   geminiMasked: string;
-  onSaveGeminiApiKey: (key: string) => void;
-  geminiSaveResult: 'idle' | 'saved' | 'error';
+  onSaveGeminiKey: (key: string) => void;
+  geminiSaveResult: SaveResult;
+  // Active model
+  activeModel: string;
+  onSaveModel: (modelId: string) => void;
+  // Misc
   onOpenUrl: (url: string) => void;
 }
 
-export default function SettingsPanel({
-  apiKeyConfigured,
-  apiKeyMasked,
-  onSaveApiKey,
-  saveResult,
-  claudeModel,
-  onSaveModel,
-  geminiConfigured: _geminiConfigured,
-  geminiMasked: _geminiMasked,
-  onSaveGeminiApiKey: _onSaveGeminiApiKey,
-  geminiSaveResult: _geminiSaveResult,
-  onOpenUrl,
-}: Props) {
+export default function SettingsPanel(props: Props) {
+  const {
+    anthropicConfigured, anthropicMasked, onSaveAnthropicKey, anthropicSaveResult,
+    openaiConfigured, openaiMasked, onSaveOpenAiKey, openaiSaveResult,
+    geminiConfigured, geminiMasked, onSaveGeminiKey, geminiSaveResult,
+    activeModel, onSaveModel, onOpenUrl,
+  } = props;
+
   const [open, setOpen] = useState(false);
-  const [inputKey, setInputKey] = useState('');
-  const [showKey, setShowKey] = useState(false);
-  const [geminiInput, setGeminiInput] = useState('');
-  const [showGemini, setShowGemini] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
   // Close on outside click
   useEffect(() => {
     if (!open) return;
     const handler = (e: MouseEvent) => {
-      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) setOpen(false);
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [open]);
 
-  // Reset inputs when panel closes
-  useEffect(() => {
-    if (!open) {
-      setInputKey('');
-      setShowKey(false);
-      setGeminiInput('');
-      setShowGemini(false);
-    }
-  }, [open]);
-
-  const handleSaveClaude = () => {
-    const trimmed = inputKey.trim();
-    if (!trimmed) return;
-    onSaveApiKey(trimmed);
-  };
-
+  // The header gear icon turns green only if the *active* model has its key configured.
+  const activeProvider = MODELS.find(m => m.id === activeModel)?.provider ?? 'anthropic';
+  const activeReady = isProviderReady(activeProvider, anthropicConfigured, openaiConfigured, geminiConfigured);
 
   return (
     <div ref={panelRef} style={{ position: 'relative' }}>
       <button
-        onClick={() => setOpen((prev) => !prev)}
+        onClick={() => setOpen(prev => !prev)}
         title={t('settings')}
         style={{
           background: 'none',
           border: '1px solid var(--color-border)',
           borderRadius: 'var(--radius-full)',
           cursor: 'pointer',
-          color: apiKeyConfigured ? 'var(--color-accent)' : 'var(--color-warning, #f59e0b)',
+          color: activeReady ? 'var(--color-accent)' : 'var(--color-warning, #f59e0b)',
           padding: '3px 8px',
           fontSize: 'var(--text-xs)',
           display: 'flex',
@@ -95,10 +97,8 @@ export default function SettingsPanel({
       >
         <span>⚙</span>
         <span style={{
-          width: 6,
-          height: 6,
-          borderRadius: '50%',
-          background: apiKeyConfigured ? 'var(--color-accent)' : 'var(--color-warning, #f59e0b)',
+          width: 6, height: 6, borderRadius: '50%',
+          background: activeReady ? 'var(--color-accent)' : 'var(--color-warning, #f59e0b)',
           display: 'inline-block',
         }} />
       </button>
@@ -108,7 +108,9 @@ export default function SettingsPanel({
           position: 'absolute',
           top: 'calc(100% + 6px)',
           right: 0,
-          width: 340,
+          width: 360,
+          maxHeight: '78vh',
+          overflowY: 'auto',
           background: 'var(--color-bg-secondary)',
           border: '1px solid var(--color-border)',
           borderRadius: 'var(--radius-lg)',
@@ -120,95 +122,92 @@ export default function SettingsPanel({
           gap: 'var(--space-md)',
         }}>
 
-          {/* ── Section: Claude API Key ── */}
-          <Section title={t('settings')}>
-            <StatusRow configured={apiKeyConfigured} label={apiKeyConfigured ? `${t('apiKeyConfigured')}: ${apiKeyMasked}` : t('apiKeyNotConfigured')} />
-            <FieldLabel>{t('apiKey')}</FieldLabel>
-            <KeyInputRow
-              value={inputKey}
-              show={showKey}
-              placeholder={t('apiKeyPlaceholder')}
-              onChange={setInputKey}
-              onToggleShow={() => setShowKey(p => !p)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSaveClaude(); }}
-              showLabel={showKey ? t('apiKeyHideKey') : t('apiKeyShowKey')}
-            />
-            <SaveRow
-              disabled={!inputKey.trim()}
-              onSave={handleSaveClaude}
-              result={saveResult}
-              savedText={t('apiKeySaved')}
-              errorText={t('apiKeySaveError')}
-              saveLabel={t('apiKeySave')}
-            />
-            <HelpText>{t('apiKeyHelp')}</HelpText>
-          </Section>
+          {/* ── Top: API Key Setup Guide link (language-aware) ── */}
+          <button
+            onClick={() => onOpenUrl(t('apiKeyGuideUrl'))}
+            style={guideButtonStyle}
+          >
+            {t('apiKeyGuideLink')}
+          </button>
 
-          <Divider />
-
-          {/* ── Section: Claude Model ── */}
+          {/* ── Section: Active Model ── */}
           <Section title={t('claudeModel')}>
-            {!apiKeyConfigured ? (
-              <HelpText>{t('claudeModelHelp')}</HelpText>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                {CLAUDE_MODELS.map(m => (
+            <HelpText>{t('claudeModelHelp')}</HelpText>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+              {MODELS.map(m => {
+                const enabled = isProviderReady(m.provider, anthropicConfigured, openaiConfigured, geminiConfigured);
+                return (
                   <ModelOption
                     key={m.id}
-                    id={m.id}
                     label={m.label}
                     cost={`${m.cost} ${t('modelCostUnit')}`}
                     note={t(m.noteKey)}
-                    recommended={'recommended' in m && m.recommended}
-                    selected={claudeModel === m.id}
-                    onSelect={() => onSaveModel(m.id)}
+                    speed={m.speed}
+                    speedTooltip={t(m.speedKey)}
+                    recommended={m.recommended}
+                    selected={activeModel === m.id}
+                    enabled={enabled}
+                    lockTooltip={
+                      m.provider === 'anthropic' ? t('modelLockedTooltipAnthropic') :
+                      m.provider === 'openai'    ? t('modelLockedTooltipOpenAI') :
+                                                   t('modelLockedTooltipGemini')
+                    }
+                    lockBadge={t('modelLocked')}
+                    onSelect={() => enabled && onSaveModel(m.id)}
                   />
-                ))}
-              </div>
-            )}
+                );
+              })}
+            </div>
           </Section>
 
           <Divider />
 
-          {/* ── Section: Gemini API Key (disabled — RAG coming soon) ── */}
-          <Section title={t('geminiSection')}>
-            <div style={{ opacity: 0.45, pointerEvents: 'none' }}>
-              <KeyInputRow
-                value={geminiInput}
-                show={showGemini}
-                placeholder={t('geminiKeyPlaceholder')}
-                onChange={setGeminiInput}
-                onToggleShow={() => setShowGemini(p => !p)}
-                onKeyDown={() => {}}
-                showLabel={showGemini ? t('apiKeyHideKey') : t('apiKeyShowKey')}
-              />
-              <SaveRow
-                disabled={true}
-                onSave={() => {}}
-                result="idle"
-                savedText={t('geminiKeySaved')}
-                errorText={t('geminiKeySaveError')}
-                saveLabel={t('apiKeySave')}
-              />
-            </div>
-            <HelpText>{t('geminiKeyHelp')}</HelpText>
-          </Section>
+          {/* ── Section: Anthropic Key ── */}
+          <ProviderKeySection
+            title={t('apiKey')}
+            placeholder={t('apiKeyPlaceholder')}
+            configured={anthropicConfigured}
+            masked={anthropicMasked}
+            saveResult={anthropicSaveResult}
+            onSave={onSaveAnthropicKey}
+            help={t('apiKeyHelp')}
+          />
+
+          <Divider />
+
+          {/* ── Section: OpenAI Key ── */}
+          <ProviderKeySection
+            title={t('openaiSection')}
+            placeholder={t('openaiKeyPlaceholder')}
+            configured={openaiConfigured}
+            masked={openaiMasked}
+            saveResult={openaiSaveResult}
+            onSave={onSaveOpenAiKey}
+            help={t('openaiKeyHelp')}
+          />
+
+          <Divider />
+
+          {/* ── Section: Gemini Key ── */}
+          <ProviderKeySection
+            title={t('geminiSection')}
+            placeholder={t('geminiKeyPlaceholder')}
+            configured={geminiConfigured}
+            masked={geminiMasked}
+            saveResult={geminiSaveResult}
+            onSave={onSaveGeminiKey}
+            help={t('geminiKeyHelp')}
+          />
 
           <Divider />
 
           {/* ── Section: Feedback ── */}
           <Section title={t('feedbackSectionTitle')}>
             <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
-              <button
-                onClick={() => onOpenUrl(FEEDBACK_URL_BUG)}
-                style={feedbackButtonStyle}
-              >
+              <button onClick={() => onOpenUrl(FEEDBACK_URL_BUG)} style={feedbackButtonStyle}>
                 🐛 {t('reportBug')}
               </button>
-              <button
-                onClick={() => onOpenUrl(FEEDBACK_URL_FEATURE)}
-                style={feedbackButtonStyle}
-              >
+              <button onClick={() => onOpenUrl(FEEDBACK_URL_FEATURE)} style={feedbackButtonStyle}>
                 💡 {t('suggestFeature')}
               </button>
             </div>
@@ -220,7 +219,61 @@ export default function SettingsPanel({
   );
 }
 
+function isProviderReady(p: Provider, anth: boolean, oai: boolean, gem: boolean): boolean {
+  return p === 'anthropic' ? anth : p === 'openai' ? oai : gem;
+}
+
 // ── Sub-components ──────────────────────────────────────────────
+
+function ProviderKeySection({
+  title, placeholder, configured, masked, saveResult, onSave, help,
+}: {
+  title: string;
+  placeholder: string;
+  configured: boolean;
+  masked: string;
+  saveResult: SaveResult;
+  onSave: (key: string) => void;
+  help: string;
+}) {
+  const [input, setInput] = useState('');
+  const [show, setShow] = useState(false);
+
+  const handleSave = () => {
+    const trimmed = input.trim();
+    if (!trimmed) return;
+    onSave(trimmed);
+    setInput('');
+    setShow(false);
+  };
+
+  return (
+    <Section title={title}>
+      <StatusRow
+        configured={configured}
+        label={configured ? `${t('apiKeyConfigured')}: ${masked}` : t('apiKeyNotConfigured')}
+      />
+      <KeyInputRow
+        value={input}
+        show={show}
+        placeholder={placeholder}
+        onChange={setInput}
+        onToggleShow={() => setShow(p => !p)}
+        onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
+        showLabel={show ? t('apiKeyHideKey') : t('apiKeyShowKey')}
+      />
+      <SaveRow
+        disabled={!input.trim()}
+        onSave={handleSave}
+        result={saveResult}
+        savedText={t('apiKeySaved')}
+        errorText={t('apiKeySaveError')}
+        saveLabel={t('apiKeySave')}
+      />
+      <HelpText>{help}</HelpText>
+    </Section>
+  );
+}
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -243,14 +296,6 @@ function StatusRow({ configured, label }: { configured: boolean; label: string }
         background: configured ? 'var(--color-accent)' : 'var(--color-warning, #f59e0b)',
       }} />
       <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>{label}</span>
-    </div>
-  );
-}
-
-function FieldLabel({ children }: { children: React.ReactNode }) {
-  return (
-    <div style={{ fontWeight: 500, fontSize: 'var(--text-xs)', color: 'var(--color-text-primary)', marginTop: 2 }}>
-      {children}
     </div>
   );
 }
@@ -304,7 +349,7 @@ function SaveRow({
 }: {
   disabled: boolean;
   onSave: () => void;
-  result: 'idle' | 'saved' | 'error';
+  result: SaveResult;
   savedText: string;
   errorText: string;
   saveLabel: string;
@@ -325,29 +370,44 @@ function SaveRow({
 }
 
 function ModelOption({
-  label, cost, note, recommended, selected, onSelect,
+  label, cost, note, speed, speedTooltip, recommended, selected, enabled, lockTooltip, lockBadge, onSelect,
 }: {
-  id?: string;
   label: string;
   cost: string;
   note: string;
+  speed: '⚡⚡⚡' | '⚡⚡' | '⚡';
+  speedTooltip: string;
   recommended?: boolean;
   selected: boolean;
+  enabled: boolean;
+  lockTooltip: string;
+  lockBadge: string;
   onSelect: () => void;
 }) {
+  // Disabled = greyed + cursor not-allowed + tooltip hint
+  const baseColor = enabled
+    ? (selected ? 'var(--color-accent)' : 'var(--color-bg-tertiary)')
+    : 'var(--color-bg-tertiary)';
+  const borderColor = enabled
+    ? (selected ? 'var(--color-accent)' : 'var(--color-border)')
+    : 'var(--color-border)';
+
   return (
     <button
       onClick={onSelect}
+      disabled={!enabled}
+      title={enabled ? '' : lockTooltip}
       style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
         padding: '6px 10px',
-        background: selected ? 'var(--color-accent)' : 'var(--color-bg-tertiary)',
-        border: `1px solid ${selected ? 'var(--color-accent)' : 'var(--color-border)'}`,
+        background: baseColor,
+        border: `1px solid ${borderColor}`,
         borderRadius: 'var(--radius-md)',
-        cursor: 'pointer',
-        color: selected ? '#fff' : 'var(--color-text-primary)',
+        cursor: enabled ? 'pointer' : 'not-allowed',
+        color: selected && enabled ? '#fff' : 'var(--color-text-primary)',
+        opacity: enabled ? 1 : 0.45,
         width: '100%',
         textAlign: 'left',
         gap: 8,
@@ -356,7 +416,7 @@ function ModelOption({
       <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
         <span style={{ fontSize: 'var(--text-xs)', fontWeight: 600 }}>
           {label}
-          {recommended && (
+          {recommended && enabled && (
             <span style={{
               marginLeft: 6,
               fontSize: 10,
@@ -365,10 +425,24 @@ function ModelOption({
               background: selected ? 'rgba(255,255,255,0.25)' : 'var(--color-accent)',
               color: '#fff',
               verticalAlign: 'middle',
-            }}>추천</span>
+            }}>★</span>
           )}
+          <span
+            title={speedTooltip}
+            style={{
+              marginLeft: 6,
+              fontSize: 10,
+              opacity: enabled ? 0.85 : 0.5,
+              verticalAlign: 'middle',
+              letterSpacing: -1,
+            }}
+          >
+            {speed}
+          </span>
         </span>
-        <span style={{ fontSize: 10, opacity: 0.75 }}>{note}</span>
+        <span style={{ fontSize: 10, opacity: 0.75 }}>
+          {enabled ? note : lockBadge}
+        </span>
       </div>
       <span style={{ fontSize: 10, opacity: 0.85, whiteSpace: 'nowrap', flexShrink: 0 }}>{cost}</span>
     </button>
@@ -404,6 +478,19 @@ const feedbackButtonStyle: React.CSSProperties = {
   borderRadius: 'var(--radius-md)',
   color: 'var(--color-text-muted)',
   fontSize: 'var(--text-xs)',
+  cursor: 'pointer',
+  textAlign: 'center' as const,
+};
+
+const guideButtonStyle: React.CSSProperties = {
+  width: '100%',
+  padding: '8px 10px',
+  background: 'var(--color-bg-tertiary)',
+  border: '1px solid var(--color-accent)',
+  borderRadius: 'var(--radius-md)',
+  color: 'var(--color-accent)',
+  fontSize: 'var(--text-xs)',
+  fontWeight: 600,
   cursor: 'pointer',
   textAlign: 'center' as const,
 };

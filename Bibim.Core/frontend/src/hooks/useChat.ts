@@ -29,13 +29,20 @@ export function useChat() {
   const [taskList, setTaskList] = useState<TaskSummary[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
-  const [apiKeyMasked, setApiKeyMasked] = useState('');
-  const [apiKeySaveResult, setApiKeySaveResult] = useState<'idle' | 'saved' | 'error'>('idle');
-  const [claudeModel, setClaudeModel] = useState('claude-sonnet-4-6');
+  // Multi-provider key state (v1.1.0+)
+  const [anthropicConfigured, setAnthropicConfigured] = useState(false);
+  const [anthropicMasked, setAnthropicMasked] = useState('');
+  const [anthropicSaveResult, setAnthropicSaveResult] = useState<'idle' | 'saved' | 'error'>('idle');
+  const [openaiConfigured, setOpenaiConfigured] = useState(false);
+  const [openaiMasked, setOpenaiMasked] = useState('');
+  const [openaiSaveResult, setOpenaiSaveResult] = useState<'idle' | 'saved' | 'error'>('idle');
   const [geminiConfigured, setGeminiConfigured] = useState(false);
   const [geminiMasked, setGeminiMasked] = useState('');
   const [geminiKeySaveResult, setGeminiKeySaveResult] = useState<'idle' | 'saved' | 'error'>('idle');
+  // Active model (id includes provider prefix, e.g. claude-*, gpt-*, gemini-*)
+  const [claudeModel, setClaudeModel] = useState('claude-sonnet-4-6');
+  // Aggregate "any active key configured" — kept under legacy name for back-compat with header chip.
+  const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
   const [pendingLoadSessionId, setPendingLoadSessionId] = useState<string | null>(null);
   const streamBuf = useRef('');
   const requestLockRef = useRef(false);
@@ -265,25 +272,51 @@ export function useChat() {
 
     onBackendMessage('api_key_status', (payload) => {
       const data = payload as {
+        // v1.1.0+ canonical fields
         configured?: boolean;
+        activeProvider?: string;
+        activeModel?: string;
+        anthropic?: { configured?: boolean; maskedKey?: string };
+        openai?:    { configured?: boolean; maskedKey?: string };
+        gemini?:    { configured?: boolean; maskedKey?: string };
+        // Legacy fields kept for backward compat with older backends
         maskedKey?: string;
         claudeModel?: string;
         geminiConfigured?: boolean;
         geminiMaskedKey?: string;
       };
+
+      // Active model = primary signal for the header chip + selector highlight
+      const activeModel = data?.activeModel ?? data?.claudeModel ?? 'claude-sonnet-4-6';
+      setClaudeModel(activeModel);
       setApiKeyConfigured(data?.configured ?? false);
-      setApiKeyMasked(data?.maskedKey ?? '');
-      if (data?.claudeModel) setClaudeModel(data.claudeModel);
-      setGeminiConfigured(data?.geminiConfigured ?? false);
-      setGeminiMasked(data?.geminiMaskedKey ?? '');
+
+      // Per-provider sections
+      setAnthropicConfigured(data?.anthropic?.configured ?? Boolean(data?.maskedKey));
+      setAnthropicMasked(data?.anthropic?.maskedKey ?? data?.maskedKey ?? '');
+      setOpenaiConfigured(data?.openai?.configured ?? false);
+      setOpenaiMasked(data?.openai?.maskedKey ?? '');
+      setGeminiConfigured(data?.gemini?.configured ?? data?.geminiConfigured ?? false);
+      setGeminiMasked(data?.gemini?.maskedKey ?? data?.geminiMaskedKey ?? '');
     });
 
     onBackendMessage('api_key_save_result', (payload) => {
-      const data = payload as { success?: boolean };
-      setApiKeySaveResult(data?.success ? 'saved' : 'error');
-      setTimeout(() => setApiKeySaveResult('idle'), 3000);
+      const data = payload as { success?: boolean; provider?: string };
+      const status: 'saved' | 'error' = data?.success ? 'saved' : 'error';
+      // v1.1.0+ payloads include provider; route to the matching state
+      switch (data?.provider) {
+        case 'anthropic': setAnthropicSaveResult(status); setTimeout(() => setAnthropicSaveResult('idle'), 3000); break;
+        case 'openai':    setOpenaiSaveResult(status);    setTimeout(() => setOpenaiSaveResult('idle'), 3000);    break;
+        case 'gemini':    setGeminiKeySaveResult(status); setTimeout(() => setGeminiKeySaveResult('idle'), 3000); break;
+        default:
+          // Legacy backend: assume Anthropic (the only provider before v1.1.0)
+          setAnthropicSaveResult(status);
+          setTimeout(() => setAnthropicSaveResult('idle'), 3000);
+          break;
+      }
     });
 
+    // Legacy event for older backend builds
     onBackendMessage('gemini_key_save_result', (payload) => {
       const data = payload as { success?: boolean };
       setGeminiKeySaveResult(data?.success ? 'saved' : 'error');
@@ -448,8 +481,13 @@ export function useChat() {
     sendToBackend('warning_response', { choice, taskId, text: text ?? '' });
   }, [isStreaming, isPendingRequest, startRequest]);
 
-  const saveApiKey = useCallback((apiKey: string) => {
+  // v1.1.0+ provider-specific savers. Bridge handler names match backend.
+  const saveAnthropicApiKey = useCallback((apiKey: string) => {
     sendToBackend('save_api_key', { apiKey });
+  }, []);
+
+  const saveOpenAiApiKey = useCallback((apiKey: string) => {
+    sendToBackend('save_openai_api_key', { apiKey });
   }, []);
 
   const saveGeminiApiKey = useCallback((apiKey: string) => {
@@ -459,6 +497,9 @@ export function useChat() {
   const saveModel = useCallback((modelId: string) => {
     sendToBackend('save_model', { modelId });
   }, []);
+
+  // Back-compat aliases (older parts of the UI may still call saveApiKey)
+  const saveApiKey = saveAnthropicApiKey;
 
   return {
     // Core chat
@@ -491,17 +532,26 @@ export function useChat() {
     cancelLoadSession,
     deleteSession,
     renameSession,
-    // API key (BYOK)
-    apiKeyConfigured,
-    apiKeyMasked,
-    apiKeySaveResult,
-    saveApiKey,
-    claudeModel,
+    // BYOK — multi-provider (v1.1.0+)
+    anthropicConfigured,
+    anthropicMasked,
+    anthropicSaveResult,
+    saveAnthropicApiKey,
+    openaiConfigured,
+    openaiMasked,
+    openaiSaveResult,
+    saveOpenAiApiKey,
     geminiConfigured,
     geminiMasked,
     geminiKeySaveResult,
     saveGeminiApiKey,
+    claudeModel,
     saveModel,
+    // Legacy aliases — older UI components may still consume these.
+    apiKeyConfigured,
+    apiKeyMasked: anthropicMasked,
+    apiKeySaveResult: anthropicSaveResult,
+    saveApiKey,
     // Delegated to sub-hooks (spread for convenience)
     ...appInfo,
     ...library,

@@ -12,7 +12,7 @@ using System.Xml.Linq;
 namespace Bibim.Core
 {
     /// <summary>
-    /// Local BM25-based RAG service — drop-in replacement for GeminiRagService.
+    /// Local BM25-based RAG service for Revit API documentation.
     ///
     /// Design decisions:
     ///   • Data source: RevitAPI.xml shipped with every Revit installation.
@@ -47,15 +47,24 @@ namespace Bibim.Core
             "RevitAPIIFC.xml"
         };
 
-        // Top-k chunks to return per query
-        private const int TopK = 5;
+        // Top-k chunks to return per query.
+        // Trimmed from 5 → 3 since most queries need only the top 1-2 hits;
+        // additional chunks were inflating tool_result payloads without improving
+        // generation quality.
+        private const int TopK = 3;
 
-        // Max characters per chunk sent to Claude (~800 tokens each)
-        private const int MaxChunkDisplayChars = 3000;
+        // Max characters per chunk sent to the LLM (~300 tokens each).
+        // Trimmed from 3000 → 1200 — combined with the member cap below this keeps
+        // a single search_revit_api result under ~1k tokens vs the previous ~4k.
+        private const int MaxChunkDisplayChars = 1200;
+
+        // Cap members per chunk. Trimmed from 60 → 30: signatures + summaries are
+        // what the model actually uses; extra members rarely help and crowd out
+        // the more relevant API surface for the query.
+        private const int MaxMembersPerChunk = 30;
 
         /// <summary>
         /// Fetch relevant Revit API documentation for the given query.
-        /// Returns RagFetchResult with the same shape as GeminiRagService.FetchAsync().
         /// </summary>
         public static Task<RagFetchResult> FetchAsync(
             string query,
@@ -290,13 +299,15 @@ namespace Bibim.Core
 
             if (!string.IsNullOrEmpty(acc.ClassSummary))
                 sb.AppendLine($"Summary: {acc.ClassSummary}");
-            if (!string.IsNullOrEmpty(acc.ClassRemarks))
-                sb.AppendLine($"Remarks: {acc.ClassRemarks}");
+            // ClassRemarks intentionally omitted — see header comment on RAG diet.
 
             if (acc.Members.Count > 0)
             {
                 sb.AppendLine();
-                foreach (var m in acc.Members.Take(60)) // cap at 60 members per chunk
+                // Signature + one-line summary only. Member-level Remarks and per-param
+                // descriptions are dropped; they account for most of the chunk size and
+                // are rarely what the model uses to pick an API.
+                foreach (var m in acc.Members.Take(MaxMembersPerChunk))
                 {
                     string prefix = m.MemberTypePrefix == 'M' ? "" :
                                     m.MemberTypePrefix == 'P' ? "[Property] " :
@@ -307,9 +318,10 @@ namespace Bibim.Core
                     if (!string.IsNullOrEmpty(m.Returns)) sb.Append($" -> {m.Returns}");
                     sb.AppendLine();
                     if (!string.IsNullOrEmpty(m.Summary)) sb.AppendLine($"  {m.Summary}");
-                    foreach (var pd in m.ParamDescriptions) sb.AppendLine(pd);
-                    if (!string.IsNullOrEmpty(m.Remarks)) sb.AppendLine($"  Note: {m.Remarks}");
                 }
+
+                if (acc.Members.Count > MaxMembersPerChunk)
+                    sb.AppendLine($"  ... ({acc.Members.Count - MaxMembersPerChunk} more members omitted)");
             }
 
             string displayText = sb.ToString();
@@ -513,5 +525,20 @@ namespace Bibim.Core
             public List<string> ParamDescriptions = new List<string>();
             public char MemberTypePrefix;  // M/P/F/E
         }
+    }
+
+    /// <summary>
+    /// Result of a RAG fetch — used by LocalRevitRagService and the search_revit_api
+    /// tool. Originally lived alongside the legacy GeminiRagService; kept here now
+    /// that local RAG is the only implementation.
+    /// </summary>
+    public class RagFetchResult
+    {
+        public string Status { get; set; }       // "hit" | "no_match" | "no_index" | "error"
+        public string ContextText { get; set; }
+        public long ElapsedMs { get; set; }
+        public string ErrorSummary { get; set; }
+
+        public bool HasContext => !string.IsNullOrWhiteSpace(ContextText);
     }
 }

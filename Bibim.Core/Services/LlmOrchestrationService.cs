@@ -1,107 +1,75 @@
-﻿// Copyright (c) 2026 SquareZero Inc. â€” Licensed under Apache 2.0. See LICENSE in the repo root.
+// Copyright (c) 2026 SquareZero Inc. — Licensed under Apache 2.0. See LICENSE in the repo root.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
 using System.Net.Http;
-using System.Net.Http.Headers;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Anthropic;
-using Anthropic.Models.Messages;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
 namespace Bibim.Core
 {
     /// <summary>
-    /// LLM Orchestration Service — replaces legacy GeminiService.
-    /// Design doc 2.2 — Anthropic SDK Agent Loop with Tool Use.
-    /// 
-    /// Uses official Anthropic C# SDK (NuGet: Anthropic v12+) for:
-    ///   - Streaming responses (CreateStreaming)
-    ///   - Agent Loop (compile, fix, recompile)
-    ///   - Token usage capture from Message.Usage
+    /// LLM Orchestration Service — provider-agnostic in v1.1.0.
+    ///
+    /// Owns the agent tool-use loop, Roslyn compile/retry logic, and token tracking.
+    /// Delegates HTTP/SSE/format details to an ILlmProvider (Anthropic / OpenAI / Gemini).
+    ///
+    /// Canonical message format inside the loop is Anthropic-shaped: each provider
+    /// adapter converts to/from its native shape transparently.
     /// </summary>
     public class LlmOrchestrationService
     {
-        private const string ClaudeApiUrl = "https://api.anthropic.com/v1/messages";
+        // Shared HttpClient — never per-request, never per-provider.
         private static readonly HttpClient _httpClient = CreateHttpClient();
 
-        private readonly AnthropicClient _client;
+        private readonly ILlmProvider _provider;
         private readonly RoslynCompilerService _compiler;
-        private readonly string _model;
-        private readonly string _apiKey;
 
-        /// <summary>
-        /// Fired during streaming to push partial text to the UI.
-        /// </summary>
+        public string ProviderName => _provider.ProviderName;
+        public string ModelId => _provider.ModelId;
+
         public event Action<string> OnStreamingDelta;
-
-        /// <summary>
-        /// Fired when streaming status changes (for UI progress display).
-        /// </summary>
         public event Action<string> OnStatusUpdate;
-
-        /// <summary>
-        /// Fired when token usage is captured.
-        /// </summary>
         public event Action<TokenUsageInfo> OnTokenUsage;
 
-        public LlmOrchestrationService(string apiKey, RoslynCompilerService compiler, string model = null)
-        {
-            if (string.IsNullOrEmpty(apiKey))
-                throw new ArgumentException("API key is required.", nameof(apiKey));
-
-            _apiKey = apiKey;
-            _client = new AnthropicClient() { ApiKey = apiKey };
-            _compiler = compiler ?? throw new ArgumentNullException(nameof(compiler));
-            _model = model ?? ConfigService.GetRagConfig()?.ClaudeModel ?? "claude-sonnet-4-6";
-        }
-
         /// <summary>
-        /// 2-tier API key resolution: config → env var.
-        /// No hardcoded fallback keys for security.
+        /// Construct with a pre-built provider. Caller is responsible for
+        /// resolving the active provider + key (typically via ConfigService.GetActiveCredentials()
+        /// + LlmProviderFactory.Create()).
         /// </summary>
-        public static string ResolveApiKey()
+        public LlmOrchestrationService(ILlmProvider provider, RoslynCompilerService compiler)
         {
-            try
-            {
-                // 1. Config file
-                var config = ConfigService.GetRagConfig();
-                if (config != null && !string.IsNullOrEmpty(config.ClaudeApiKey) &&
-                    config.ClaudeApiKey != "CLAUDE_API_KEY_HERE")
-                {
-                    Logger.Log("Anthropic", "API key from config file");
-                    return config.ClaudeApiKey;
-                }
-
-                // 2. Environment variable
-                string envKey = Environment.GetEnvironmentVariable("CLAUDE_API_KEY");
-                if (!string.IsNullOrEmpty(envKey))
-                {
-                    Logger.Log("Anthropic", "API key from env var");
-                    return envKey;
-                }
-
-                Logger.Log("Anthropic", "No API key found in config or env var");
-                return null;
-            }
-            catch (Exception ex)
-            {
-                Logger.LogError("ResolveApiKey", ex);
-                return null;
-            }
+            _provider = provider ?? throw new ArgumentNullException(nameof(provider));
+            _compiler = compiler ?? throw new ArgumentNullException(nameof(compiler));
         }
 
         /// <summary>
-        /// Send a chat message with streaming response.
-        /// Uses CreateStreaming for real-time token delivery to UI,
-        /// then captures token usage via a non-streaming Create call
-        /// is NOT needed — usage is extracted from streaming events
-        /// via reflection on the MessageStreamEvent objects.
+        /// Construct from a model id + matching api key. Picks the right provider via factory.
+        /// Compatibility helper for callers that previously took (apiKey, compiler).
+        /// </summary>
+        public LlmOrchestrationService(string modelId, string apiKey, RoslynCompilerService compiler)
+            : this(LlmProviderFactory.Create(modelId, apiKey, _httpClient), compiler)
+        {
+        }
+
+        /// <summary>
+        /// Convenience: construct using whichever provider/model/key is currently active in config.
+        /// Throws if no key is configured for the active provider.
+        /// </summary>
+        public static LlmOrchestrationService CreateFromActiveConfig(RoslynCompilerService compiler)
+        {
+            var (provider, apiKey, modelId) = ConfigService.GetActiveCredentials();
+            if (string.IsNullOrEmpty(apiKey))
+                throw new InvalidOperationException(
+                    $"No API key configured for active provider '{provider}'. " +
+                    "Open Settings and add the matching key.");
+            return new LlmOrchestrationService(modelId, apiKey, compiler);
+        }
+
+        /// <summary>
+        /// Send a streaming chat message. Delegates SSE handling to the provider.
         /// </summary>
         public async Task<LlmResponse> SendMessageAsync(
             List<ChatMessage> history,
@@ -117,24 +85,33 @@ namespace Bibim.Core
             {
                 OnStatusUpdate?.Invoke("Generating response...");
 
-#if NET48
-                Logger.Log("LlmOrchestration",
-                    "net48 target detected, using raw SSE transport instead of Anthropic SDK streaming");
-                await SendMessageWithRawHttpAsync(history, systemPrompt, requestId, sw, response, ct, maxTokens);
-#else
-                try
-                {
-                    await SendMessageWithSdkAsync(history, systemPrompt, requestId, sw, response, ct, maxTokens);
-                }
-                catch (Exception ex) when (ShouldFallbackToRawHttp(ex))
-                {
-                    Logger.Log("LlmOrchestration",
-                        $"SDK unavailable, switching to raw SSE fallback: {ex.GetType().Name} - {ex.Message}");
-                    await SendMessageWithRawHttpAsync(history, systemPrompt, requestId, sw, response, ct, maxTokens);
-                }
-#endif
+                JArray messages = BuildMessagesArray(history);
+                var stream = await _provider.SendStreamingAsync(
+                    messages, systemPrompt, OnStreamingDelta, ct, maxTokens);
 
-                OnStatusUpdate?.Invoke(null);
+                response.Text = stream.FullText;
+                response.InputTokens = stream.InputTokens;
+                response.OutputTokens = stream.OutputTokens;
+                response.CachedInputTokens = stream.CachedInputTokens;
+                response.CacheCreationInputTokens = stream.CacheCreationInputTokens;
+                response.Success = true;
+
+                OnTokenUsage?.Invoke(new TokenUsageInfo
+                {
+                    RequestId = requestId,
+                    Model = _provider.ModelId,
+                    InputTokens = stream.InputTokens,
+                    OutputTokens = stream.OutputTokens,
+                    CachedInputTokens = stream.CachedInputTokens,
+                    CacheCreationInputTokens = stream.CacheCreationInputTokens,
+                    ElapsedMs = sw.ElapsedMilliseconds
+                });
+
+                Logger.Log("LlmOrchestration",
+                    $"rid={requestId} provider={_provider.ProviderName} model={_provider.ModelId} " +
+                    $"in={stream.InputTokens} out={stream.OutputTokens} " +
+                    $"cache_read={stream.CachedInputTokens} cache_create={stream.CacheCreationInputTokens} " +
+                    $"ms={sw.ElapsedMilliseconds}");
             }
             catch (OperationCanceledException)
             {
@@ -147,390 +124,29 @@ namespace Bibim.Core
                 response.Success = false;
                 response.ErrorMessage = ex.Message;
                 response.IsContextLengthExceeded = IsContextLengthError(ex.Message);
-                Logger.LogError("LlmOrchestration", ex);
+                Logger.LogError("LlmOrchestration.SendMessage", ex);
+            }
+            finally
+            {
+                // Always clear progress UI — otherwise an error path leaves the UI stuck "loading".
+                OnStatusUpdate?.Invoke(null);
             }
 
             return response;
         }
 
-        private async Task SendMessageWithSdkAsync(
-            List<ChatMessage> history,
-            string systemPrompt,
-            string requestId,
-            Stopwatch sw,
-            LlmResponse response,
-            CancellationToken ct,
-            int maxTokens = 8192)
-        {
-            // Build message list per official Anthropic C# SDK
-            var messages = new List<MessageParam>();
-            foreach (var m in history)
-            {
-                messages.Add(new MessageParam
-                {
-                    Role = m.IsUser ? Role.User : Role.Assistant,
-                    Content = m.Text
-                });
-            }
-
-            var parameters = new MessageCreateParams
-            {
-                Model = _model,
-                MaxTokens = maxTokens,
-                System = systemPrompt,
-                Messages = messages
-            };
-
-            var fullText = new StringBuilder();
-            int inputTokens = 0, outputTokens = 0;
-            var allEvents = new List<object>();
-
-            await foreach (var evt in _client.Messages.CreateStreaming(parameters).WithCancellation(ct))
-            {
-                allEvents.Add(evt);
-
-                // Extract text delta via reflection — evt.ToString() returns a type name, not content.
-                // ContentBlockDeltaEvent.Delta.Text is the actual streamed text.
-                string deltaText = TryExtractDeltaText(evt);
-                if (!string.IsNullOrEmpty(deltaText))
-                {
-                    fullText.Append(deltaText);
-                    OnStreamingDelta?.Invoke(deltaText);
-                }
-            }
-
-            ExtractUsageFromEvents(allEvents, out inputTokens, out outputTokens);
-            FinalizeSuccessfulResponse(response, requestId, sw, fullText.ToString(), inputTokens, outputTokens);
-        }
-
-        private async Task SendMessageWithRawHttpAsync(
-            List<ChatMessage> history,
-            string systemPrompt,
-            string requestId,
-            Stopwatch sw,
-            LlmResponse response,
-            CancellationToken ct,
-            int maxTokens = 8192)
-        {
-            var messages = new JArray();
-            foreach (var message in history)
-            {
-                messages.Add(new JObject
-                {
-                    ["role"] = message.IsUser ? "user" : "assistant",
-                    ["content"] = message.Text ?? string.Empty
-                });
-            }
-
-            var requestBody = new JObject
-            {
-                ["model"] = _model,
-                ["max_tokens"] = maxTokens,
-                ["system"] = new JArray
-                {
-                    new JObject
-                    {
-                        ["type"] = "text",
-                        ["text"] = systemPrompt ?? string.Empty,
-                        ["cache_control"] = new JObject { ["type"] = "ephemeral" }
-                    }
-                },
-                ["stream"] = true,
-                ["messages"] = messages
-            };
-
-            using (var request = new HttpRequestMessage(HttpMethod.Post, ClaudeApiUrl))
-            {
-                request.Content = new StringContent(
-                    requestBody.ToString(Formatting.None),
-                    Encoding.UTF8,
-                    "application/json");
-                request.Headers.Add("x-api-key", _apiKey);
-                request.Headers.Add("anthropic-version", "2023-06-01");
-                request.Headers.Add("anthropic-beta", "prompt-caching-2024-07-31");
-                request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
-
-                using (var httpResponse = await _httpClient.SendAsync(
-                    request,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    ct))
-                {
-                    if (!httpResponse.IsSuccessStatusCode)
-                    {
-                        string error = await httpResponse.Content.ReadAsStringAsync();
-                        throw new HttpRequestException(
-                            $"Anthropic fallback failed: {(int)httpResponse.StatusCode} {httpResponse.StatusCode} - {error}");
-                    }
-
-                    using (var stream = await httpResponse.Content.ReadAsStreamAsync())
-                    using (var reader = new StreamReader(stream))
-                    {
-                        var fullText = new StringBuilder();
-                        int inputTokens = 0;
-                        int outputTokens = 0;
-                        string currentEvent = null;
-                        var currentData = new StringBuilder();
-
-                        string line;
-                        while ((line = await reader.ReadLineAsync()) != null)
-                        {
-                            if (line.Length == 0)
-                            {
-                                ProcessSseEvent(
-                                    currentEvent,
-                                    currentData.ToString(),
-                                    fullText,
-                                    ref inputTokens,
-                                    ref outputTokens);
-                                currentEvent = null;
-                                currentData.Clear();
-                                continue;
-                            }
-
-                            if (line.StartsWith("event:", StringComparison.OrdinalIgnoreCase))
-                            {
-                                currentEvent = line.Substring("event:".Length).Trim();
-                                continue;
-                            }
-
-                            if (line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
-                            {
-                                if (currentData.Length > 0)
-                                    currentData.AppendLine();
-                                currentData.Append(line.Substring("data:".Length).TrimStart());
-                            }
-                        }
-
-                        ProcessSseEvent(
-                            currentEvent,
-                            currentData.ToString(),
-                            fullText,
-                            ref inputTokens,
-                            ref outputTokens);
-
-                        FinalizeSuccessfulResponse(
-                            response,
-                            requestId,
-                            sw,
-                            fullText.ToString(),
-                            inputTokens,
-                            outputTokens);
-                    }
-                }
-            }
-        }
-
-        private void ProcessSseEvent(
-            string eventName,
-            string data,
-            StringBuilder fullText,
-            ref int inputTokens,
-            ref int outputTokens)
-        {
-            if (string.IsNullOrWhiteSpace(data) || data == "[DONE]")
-                return;
-
-            try
-            {
-                var payload = JObject.Parse(data);
-                string type = payload["type"]?.ToString();
-                string effectiveType = !string.IsNullOrWhiteSpace(type) ? type : eventName;
-
-                switch (effectiveType)
-                {
-                    case "content_block_delta":
-                        string deltaType = payload["delta"]?["type"]?.ToString();
-                        if (string.Equals(deltaType, "text_delta", StringComparison.OrdinalIgnoreCase))
-                        {
-                            string deltaText = payload["delta"]?["text"]?.ToString();
-                            if (!string.IsNullOrEmpty(deltaText))
-                            {
-                                fullText.Append(deltaText);
-                                OnStreamingDelta?.Invoke(deltaText);
-                            }
-                        }
-                        break;
-
-                    case "message_start":
-                        inputTokens = payload["message"]?["usage"]?["input_tokens"]?.Value<int>() ?? inputTokens;
-                        outputTokens = payload["message"]?["usage"]?["output_tokens"]?.Value<int>() ?? outputTokens;
-                        break;
-
-                    case "message_delta":
-                        outputTokens = payload["usage"]?["output_tokens"]?.Value<int>() ?? outputTokens;
-                        break;
-                }
-            }
-            catch (Exception ex)
-            {
-                Logger.Log("LlmOrchestration", $"SSE parse skipped: {ex.Message}");
-            }
-        }
-
-        private void FinalizeSuccessfulResponse(
-            LlmResponse response,
-            string requestId,
-            Stopwatch sw,
-            string text,
-            int inputTokens,
-            int outputTokens)
-        {
-            response.Text = text;
-            response.InputTokens = inputTokens;
-            response.OutputTokens = outputTokens;
-            response.Success = true;
-
-            var usageInfo = new TokenUsageInfo
-            {
-                RequestId = requestId,
-                Model = _model,
-                InputTokens = inputTokens,
-                OutputTokens = outputTokens,
-                ElapsedMs = sw.ElapsedMilliseconds
-            };
-            OnTokenUsage?.Invoke(usageInfo);
-
-            Logger.Log("LlmOrchestration",
-                $"rid={requestId} in={inputTokens} out={outputTokens} ms={sw.ElapsedMilliseconds}");
-        }
-
-        private static bool ShouldFallbackToRawHttp(Exception ex)
-        {
-            while (ex != null)
-            {
-                if (ex is MissingMethodException)
-                {
-                    return true;
-                }
-
-                if (ex is FileLoadException ||
-                    ex is FileNotFoundException ||
-                    ex is TypeLoadException)
-                {
-                    if (ex.Message?.IndexOf("System.Text.Json", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        ex.Message?.IndexOf("Anthropic", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        ex.Message?.IndexOf("IAsyncEnumerable", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        ex.Message?.IndexOf("IAsyncEnumerator", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        ex.Message?.IndexOf("MoveNextAsync", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        return true;
-                    }
-                }
-
-                ex = ex.InnerException;
-            }
-
-            return false;
-        }
-
-        private static HttpClient CreateHttpClient()
-        {
-            var client = new HttpClient
-            {
-                Timeout = TimeSpan.FromMinutes(5)
-            };
-            return client;
-        }
-
         /// <summary>
-        /// Extract text delta from a SDK streaming event object via reflection.
-        /// ContentBlockDeltaEvent exposes Delta.Text for text_delta type events.
-        /// Returns null if this event carries no text content.
+        /// Non-streaming single-turn call without tools (lightweight requests, e.g. Task Planner).
         /// </summary>
-        private static string TryExtractDeltaText(object evt)
-        {
-            if (evt == null) return null;
-            try
-            {
-                var deltaProp = evt.GetType().GetProperty("Delta");
-                if (deltaProp == null) return null;
-                var delta = deltaProp.GetValue(evt);
-                if (delta == null) return null;
-                var textProp = delta.GetType().GetProperty("Text");
-                if (textProp == null) return null;
-                return textProp.GetValue(delta) as string;
-            }
-            catch
-            {
-                return null;
-            }
-        }
-
-        /// <summary>
-        /// Extract token usage from streaming event objects using reflection.
-        /// Handles the official SDK's MessageStreamEvent structure where:
-        ///   - Some events have a Message property with Usage.InputTokens
-        ///   - Some events have a direct Usage property with OutputTokens
-        /// Falls back gracefully to 0 if properties are not found.
-        /// </summary>
-        private void ExtractUsageFromEvents(List<object> events, out int inputTokens, out int outputTokens)
-        {
-            inputTokens = 0;
-            outputTokens = 0;
-
-            foreach (var evt in events)
-            {
-                if (evt == null) continue;
-                var evtType = evt.GetType();
-
-                try
-                {
-                    // Try to get Usage.InputTokens from Message property (message_start)
-                    var messageProp = evtType.GetProperty("Message");
-                    if (messageProp != null)
-                    {
-                        var message = messageProp.GetValue(evt);
-                        if (message != null)
-                        {
-                            var usageProp = message.GetType().GetProperty("Usage");
-                            if (usageProp != null)
-                            {
-                                var usage = usageProp.GetValue(message);
-                                if (usage != null)
-                                {
-                                    var inProp = usage.GetType().GetProperty("InputTokens");
-                                    if (inProp != null)
-                                    {
-                                        int val = Convert.ToInt32(inProp.GetValue(usage));
-                                        if (val > 0) inputTokens = val;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Try to get Usage.OutputTokens from direct Usage property (message_delta)
-                    var directUsageProp = evtType.GetProperty("Usage");
-                    if (directUsageProp != null)
-                    {
-                        var usage = directUsageProp.GetValue(evt);
-                        if (usage != null)
-                        {
-                            var outProp = usage.GetType().GetProperty("OutputTokens");
-                            if (outProp != null)
-                            {
-                                int val = Convert.ToInt32(outProp.GetValue(usage));
-                                if (val > 0) outputTokens = val;
-                            }
-                        }
-                    }
-                }
-                catch
-                {
-                    // Reflection failure is non-fatal — just skip this event
-                }
-            }
-        }
-
-        /// <summary>
-        /// Non-streaming single-turn call for lightweight requests (e.g. Task Planner).
-        /// Cheaper and faster than SSE streaming for short JSON-only responses.
-        /// </summary>
+        /// <param name="jsonMode">When true, ask the provider for JSON-only output
+        /// using its native flag (OpenAI / Gemini). Anthropic ignores this flag
+        /// and follows JSON-only instructions in the system prompt.</param>
         public async Task<LlmResponse> SendMessageNonStreamingAsync(
             List<ChatMessage> history,
             string systemPrompt,
             int maxTokens = 1024,
-            CancellationToken ct = default)
+            CancellationToken ct = default,
+            bool jsonMode = false)
         {
             var requestId = Guid.NewGuid().ToString("N").Substring(0, 8);
             var sw = Stopwatch.StartNew();
@@ -538,58 +154,32 @@ namespace Bibim.Core
 
             try
             {
-                var messages = new JArray();
-                foreach (var m in history)
+                JArray messages = BuildMessagesArray(history);
+                var raw = await _provider.SendNonStreamingAsync(messages, systemPrompt, null, ct, maxTokens, jsonMode);
+
+                string text = ExtractTextFromContent(raw["content"] as JArray);
+                int inTok = raw["usage"]?["input_tokens"]?.Value<int>() ?? 0;
+                int outTok = raw["usage"]?["output_tokens"]?.Value<int>() ?? 0;
+                int cachedTok = raw["usage"]?["cache_read_input_tokens"]?.Value<int>() ?? 0;
+                int cacheCreateTok = raw["usage"]?["cache_creation_input_tokens"]?.Value<int>() ?? 0;
+
+                response.Text = text;
+                response.InputTokens = inTok;
+                response.OutputTokens = outTok;
+                response.CachedInputTokens = cachedTok;
+                response.CacheCreationInputTokens = cacheCreateTok;
+                response.Success = true;
+
+                OnTokenUsage?.Invoke(new TokenUsageInfo
                 {
-                    messages.Add(new JObject
-                    {
-                        ["role"] = m.IsUser ? "user" : "assistant",
-                        ["content"] = m.Text ?? string.Empty
-                    });
-                }
-
-                var requestBody = new JObject
-                {
-                    ["model"] = _model,
-                    ["max_tokens"] = maxTokens,
-                    ["system"] = new JArray
-                    {
-                        new JObject
-                        {
-                            ["type"] = "text",
-                            ["text"] = systemPrompt ?? string.Empty,
-                            ["cache_control"] = new JObject { ["type"] = "ephemeral" }
-                        }
-                    },
-                    ["stream"] = false,
-                    ["messages"] = messages
-                };
-
-                using (var request = new HttpRequestMessage(HttpMethod.Post, ClaudeApiUrl))
-                {
-                    request.Content = new StringContent(
-                        requestBody.ToString(Formatting.None),
-                        Encoding.UTF8,
-                        "application/json");
-                    request.Headers.Add("x-api-key", _apiKey);
-                    request.Headers.Add("anthropic-version", "2023-06-01");
-                    request.Headers.Add("anthropic-beta", "prompt-caching-2024-07-31");
-
-                    using (var httpResponse = await _httpClient.SendAsync(request, ct))
-                    {
-                        string body = await httpResponse.Content.ReadAsStringAsync();
-                        if (!httpResponse.IsSuccessStatusCode)
-                            throw new HttpRequestException(
-                                $"Anthropic non-streaming {(int)httpResponse.StatusCode}: {body}");
-
-                        var payload = JObject.Parse(body);
-                        var content = payload["content"] as JArray ?? new JArray();
-                        string text = ExtractTextFromContent(content);
-                        int inputTokens = payload["usage"]?["input_tokens"]?.Value<int>() ?? 0;
-                        int outputTokens = payload["usage"]?["output_tokens"]?.Value<int>() ?? 0;
-                        FinalizeSuccessfulResponse(response, requestId, sw, text, inputTokens, outputTokens);
-                    }
-                }
+                    RequestId = requestId,
+                    Model = _provider.ModelId,
+                    InputTokens = inTok,
+                    OutputTokens = outTok,
+                    CachedInputTokens = cachedTok,
+                    CacheCreationInputTokens = cacheCreateTok,
+                    ElapsedMs = sw.ElapsedMilliseconds
+                });
             }
             catch (OperationCanceledException)
             {
@@ -601,53 +191,16 @@ namespace Bibim.Core
             {
                 response.Success = false;
                 response.ErrorMessage = ex.Message;
+                response.IsContextLengthExceeded = IsContextLengthError(ex.Message);
                 Logger.LogError("LlmOrchestration.NonStreaming", ex);
             }
 
             return response;
         }
 
-        private string ExtractCSharpCode(string responseText)
-        {
-            if (string.IsNullOrEmpty(responseText)) return null;
-
-            string[] markers = { "```csharp", "```cs", "```C#" };
-            foreach (var marker in markers)
-            {
-                int start = responseText.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-                if (start < 0) continue;
-                start = responseText.IndexOf('\n', start);
-                if (start < 0) continue;
-                start++;
-                int end = responseText.IndexOf("```", start, StringComparison.Ordinal);
-                if (end < 0) end = responseText.Length;
-                return responseText.Substring(start, end - start).Trim();
-            }
-            return null;
-        }
-
-        private string BuildCompileErrorFeedback(CompilationResult result)
-        {
-            var sb = new StringBuilder();
-            sb.AppendLine("[COMPILE_ERROR] The generated C# code failed Roslyn compilation. Fix the errors below and regenerate ONLY the corrected code.");
-            sb.AppendLine();
-            sb.AppendLine(result.ErrorSummary);
-            sb.AppendLine();
-            sb.AppendLine("Rules:");
-            sb.AppendLine("- Fix ONLY the compilation errors listed above");
-            sb.AppendLine("- Do NOT change the logic or add new features");
-            sb.AppendLine("- Return ONLY a ```csharp``` block containing statements for the body of Execute(UIApplication uiApp)");
-            sb.AppendLine("- Do NOT include using directives, namespace, class, method signature, or explanation");
-            sb.AppendLine("- NEVER re-declare app, doc, or uidoc — they already exist in scope");
-            return sb.ToString();
-        }
-
         /// <summary>
-        /// Agent loop using Claude Tool Use API (non-streaming).
-        /// Claude drives the loop: calls tools (search_revit_api, run_roslyn_check, etc.)
-        /// until it produces a final text response with compiled code.
-        ///
-        /// Replaces the manual HandleStreamingResponseAsync + GenerateAndCompileAsync chain.
+        /// Agent tool-use loop with Roslyn-driven self-correction.
+        /// Provider-agnostic — works with Anthropic / OpenAI / Gemini via ILlmProvider.
         /// </summary>
         public async Task<CodeGenerationResult> GenerateWithToolsAsync(
             List<ChatMessage> history,
@@ -665,16 +218,7 @@ namespace Bibim.Core
                 DebugArtifactDirectory = debugDirectory
             };
 
-            // Build the initial messages array for the Anthropic API
-            var messages = new JArray();
-            foreach (var m in history)
-            {
-                messages.Add(new JObject
-                {
-                    ["role"] = m.IsUser ? "user" : "assistant",
-                    ["content"] = m.Text ?? string.Empty
-                });
-            }
+            JArray messages = BuildMessagesArray(history);
 
             try
             {
@@ -683,14 +227,18 @@ namespace Bibim.Core
                     ct.ThrowIfCancellationRequested();
 
                     OnStatusUpdate?.Invoke(turn == 0 ? "Generating code..." : "Thinking...");
-                    Logger.Log("LlmOrchestration", $"rid={requestId} tool-turn={turn}");
+                    Logger.Log("LlmOrchestration",
+                        $"rid={requestId} provider={_provider.ProviderName} model={_provider.ModelId} tool-turn={turn}");
 
-                    // POST non-streaming request
                     JObject response;
                     try
                     {
-                        response = await PostNonStreamingAsync(
-                            messages, systemPrompt, toolDefinitions, ct);
+                        // 4096 is generous for a single C# code block (a 1000-line
+                        // generated method comes in well under 3k output tokens) and
+                        // also covers tool_use turns, which are typically <200 tokens.
+                        // The continuation handler below catches any rare truncation.
+                        response = await _provider.SendNonStreamingAsync(
+                            messages, systemPrompt, toolDefinitions, ct, 4096);
                     }
                     catch (Exception ex)
                     {
@@ -701,17 +249,22 @@ namespace Bibim.Core
                         return result;
                     }
 
-                    // Capture token usage
                     int inTok = response["usage"]?["input_tokens"]?.Value<int>() ?? 0;
                     int outTok = response["usage"]?["output_tokens"]?.Value<int>() ?? 0;
+                    int cachedTok = response["usage"]?["cache_read_input_tokens"]?.Value<int>() ?? 0;
+                    int cacheCreateTok = response["usage"]?["cache_creation_input_tokens"]?.Value<int>() ?? 0;
                     result.TotalInputTokens += inTok;
                     result.TotalOutputTokens += outTok;
+                    result.TotalCachedInputTokens += cachedTok;
+                    result.TotalCacheCreationInputTokens += cacheCreateTok;
                     OnTokenUsage?.Invoke(new TokenUsageInfo
                     {
                         RequestId = requestId,
-                        Model = _model,
+                        Model = _provider.ModelId,
                         InputTokens = inTok,
                         OutputTokens = outTok,
+                        CachedInputTokens = cachedTok,
+                        CacheCreationInputTokens = cacheCreateTok,
                         ElapsedMs = 0
                     });
 
@@ -721,7 +274,7 @@ namespace Bibim.Core
                     string stopReason = response["stop_reason"]?.ToString();
                     var content = response["content"] as JArray ?? new JArray();
 
-                    // ── end_turn / max_tokens: Claude finished or was truncated ──
+                    // ── end_turn / max_tokens: model finished or was truncated ──
                     if (stopReason == "end_turn" || stopReason == "max_tokens")
                     {
                         if (stopReason == "max_tokens")
@@ -759,7 +312,6 @@ namespace Bibim.Core
                         result.IsCodeResponse = true;
                         result.CompileAttempts = turn + 1;
 
-                        // Final Roslyn compile
                         OnStatusUpdate?.Invoke("Compiling...");
                         var compileResult = _compiler.Compile(code);
                         result.CompilationResult = compileResult;
@@ -773,16 +325,23 @@ namespace Bibim.Core
                             return result;
                         }
 
-                        // Compile failed — feed error back and retry if turns remain
                         if (turn < maxTurns - 1)
                         {
                             Logger.Log("LlmOrchestration",
                                 $"rid={requestId} turn={turn} compile failed, feeding error back");
+
+                            // Prune prior failed-attempt turns so we keep only the latest
+                            // failed code + latest feedback. Older attempts are summarised
+                            // into a single short marker so the model still knows it's
+                            // already retried, without re-sending the full failed code each turn.
+                            int prunedAttempts = PrunePriorCompileAttempts(messages);
+                            bool isFirstFailure = prunedAttempts == 0;
+
                             messages.Add(new JObject { ["role"] = "assistant", ["content"] = content });
                             messages.Add(new JObject
                             {
                                 ["role"] = "user",
-                                ["content"] = BuildCompileErrorFeedback(compileResult)
+                                ["content"] = BuildCompileErrorFeedback(compileResult, isFirstFailure, prunedAttempts)
                             });
                             continue;
                         }
@@ -798,7 +357,6 @@ namespace Bibim.Core
                     // ── tool_use: execute each tool, feed results back ──
                     if (stopReason == "tool_use")
                     {
-                        // Add assistant's tool_use message to history
                         messages.Add(new JObject
                         {
                             ["role"] = "assistant",
@@ -812,9 +370,8 @@ namespace Bibim.Core
 
                             string toolId = block["id"]?.ToString();
                             string toolName = block["name"]?.ToString();
-                            string toolInput = block["input"]?.ToString(Formatting.None) ?? "{}";
+                            string toolInput = block["input"]?.ToString(Newtonsoft.Json.Formatting.None) ?? "{}";
 
-                            // Guard: malformed tool_use block — API requires non-null tool_use_id
                             if (string.IsNullOrEmpty(toolId) || string.IsNullOrEmpty(toolName))
                             {
                                 Logger.Log("LlmOrchestration",
@@ -823,8 +380,7 @@ namespace Bibim.Core
                             }
 
                             OnStatusUpdate?.Invoke($"Using {toolName}...");
-                            Logger.Log("LlmOrchestration",
-                                $"rid={requestId} tool={toolName}");
+                            Logger.Log("LlmOrchestration", $"rid={requestId} tool={toolName}");
 
                             string toolOutput;
                             try
@@ -844,22 +400,21 @@ namespace Bibim.Core
                             {
                                 ["type"] = "tool_result",
                                 ["tool_use_id"] = toolId,
+                                ["name"] = toolName,    // kept for Gemini adapter; stripped by AnthropicProvider
                                 ["content"] = toolOutput
                             });
                         }
 
-                        // Guard: no valid tool blocks found (e.g. all were malformed)
                         if (toolResults.Count == 0)
                         {
                             Logger.Log("LlmOrchestration",
                                 $"rid={requestId} turn={turn} stop_reason=tool_use but no valid tool blocks found");
                             result.Success = false;
-                            result.ErrorMessage = "Claude returned tool_use stop reason but no valid tool blocks were found.";
+                            result.ErrorMessage = "Provider returned tool_use stop reason but no valid tool blocks were found.";
                             OnStatusUpdate?.Invoke(null);
                             return result;
                         }
 
-                        // Add tool results as user message
                         messages.Add(new JObject
                         {
                             ["role"] = "user",
@@ -892,65 +447,30 @@ namespace Bibim.Core
                 result.IsContextLengthExceeded = IsContextLengthError(ex.Message);
                 Logger.LogError("LlmOrchestration.GenerateWithToolsAsync", ex);
             }
+            finally
+            {
+                // Always clear progress UI on exit (success / error / cancel).
+                OnStatusUpdate?.Invoke(null);
+            }
 
-            OnStatusUpdate?.Invoke(null);
             return result;
         }
 
-        private static bool IsContextLengthError(string message)
+        // ───────────────────────────── helpers ─────────────────────────────
+
+        private static JArray BuildMessagesArray(IEnumerable<ChatMessage> history)
         {
-            if (string.IsNullOrEmpty(message)) return false;
-            return message.IndexOf("prompt is too long", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                   message.IndexOf("context_length_exceeded", StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-
-        /// <summary>
-        /// Non-streaming POST to /v1/messages. Used by the tool use loop.
-        /// Works on both net48 and net8 targets.
-        /// </summary>
-        private async Task<JObject> PostNonStreamingAsync(
-            JArray messages,
-            string systemPrompt,
-            JArray tools,
-            CancellationToken ct,
-            int maxTokens = 8192)
-        {
-            var requestBody = new JObject
+            var arr = new JArray();
+            if (history == null) return arr;
+            foreach (var m in history)
             {
-                ["model"] = _model,
-                ["max_tokens"] = maxTokens,
-                ["system"] = new JArray
+                arr.Add(new JObject
                 {
-                    new JObject
-                    {
-                        ["type"] = "text",
-                        ["text"] = systemPrompt ?? string.Empty,
-                        ["cache_control"] = new JObject { ["type"] = "ephemeral" }
-                    }
-                },
-                ["messages"] = messages,
-                ["tools"] = tools
-            };
-
-            using (var request = new HttpRequestMessage(HttpMethod.Post, ClaudeApiUrl))
-            {
-                request.Content = new StringContent(
-                    requestBody.ToString(Formatting.None),
-                    Encoding.UTF8,
-                    "application/json");
-                request.Headers.Add("x-api-key", _apiKey);
-                request.Headers.Add("anthropic-version", "2023-06-01");
-                request.Headers.Add("anthropic-beta", "prompt-caching-2024-07-31");
-
-                using (var httpResponse = await _httpClient.SendAsync(request, ct))
-                {
-                    string body = await httpResponse.Content.ReadAsStringAsync();
-                    if (!httpResponse.IsSuccessStatusCode)
-                        throw new HttpRequestException(
-                            $"Anthropic API {(int)httpResponse.StatusCode}: {body}");
-                    return JObject.Parse(body);
-                }
+                    ["role"] = m.IsUser ? "user" : "assistant",
+                    ["content"] = m.Text ?? string.Empty
+                });
             }
+            return arr;
         }
 
         private static string ExtractTextFromContent(JArray content)
@@ -964,7 +484,125 @@ namespace Bibim.Core
             }
             return sb.ToString();
         }
+
+        private static string ExtractCSharpCode(string responseText)
+        {
+            if (string.IsNullOrEmpty(responseText)) return null;
+
+            string[] markers = { "```csharp", "```cs", "```C#" };
+            foreach (var marker in markers)
+            {
+                int start = responseText.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+                if (start < 0) continue;
+                start = responseText.IndexOf('\n', start);
+                if (start < 0) continue;
+                start++;
+                int end = responseText.IndexOf("```", start, StringComparison.Ordinal);
+                if (end < 0) end = responseText.Length;
+                return responseText.Substring(start, end - start).Trim();
+            }
+            return null;
+        }
+
+        private string BuildCompileErrorFeedback(CompilationResult result, bool includeRules = true, int priorAttempts = 0)
+        {
+            var sb = new StringBuilder();
+            sb.AppendLine("[COMPILE_ERROR] The generated C# code failed Roslyn compilation. Fix the errors below and regenerate ONLY the corrected code.");
+            if (priorAttempts > 0)
+                sb.AppendLine($"(This is retry attempt #{priorAttempts + 1} — earlier attempts were pruned to save context.)");
+            sb.AppendLine();
+            sb.AppendLine(result.ErrorSummary);
+
+            if (includeRules)
+            {
+                // Rules only need to be sent once — on the FIRST compile failure.
+                // On subsequent retries the model already has them in context.
+                sb.AppendLine();
+                sb.AppendLine("Rules:");
+                sb.AppendLine("- Fix ONLY the compilation errors listed above");
+                sb.AppendLine("- Do NOT change the logic or add new features");
+                sb.AppendLine("- Return ONLY a ```csharp``` block containing statements for the body of Execute(UIApplication uiApp)");
+                sb.AppendLine("- Do NOT include using directives, namespace, class, method signature, or explanation");
+                sb.AppendLine("- NEVER re-declare app, doc, or uidoc — they already exist in scope");
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// Removes prior failed compile attempts from the messages array so we don't
+        /// re-send several rounds of failed code on each retry. Each "attempt" is the
+        /// pair: assistant turn carrying the failed code + the user feedback that
+        /// follows it. Returns the number of attempts pruned (0 if this is the first
+        /// failure). The very first user message (the original task prompt) and any
+        /// tool_use / tool_result turns are preserved untouched.
+        /// </summary>
+        private static int PrunePriorCompileAttempts(JArray messages)
+        {
+            int pruned = 0;
+            // Walk from the end backwards. A pair we want to drop is:
+            //   user: "[COMPILE_ERROR] ..."  (the feedback we previously appended)
+            //   assistant: <text content with the failed ```csharp``` block>
+            // We only drop assistant turns that look like plain text (no tool_use blocks).
+            for (int i = messages.Count - 1; i >= 1; i--)
+            {
+                var userMsg = messages[i] as JObject;
+                if (userMsg == null) break;
+                if (userMsg["role"]?.ToString() != "user") break;
+
+                string userContent = userMsg["content"]?.Type == JTokenType.String
+                    ? userMsg["content"].ToString()
+                    : string.Empty;
+                if (userContent == null || !userContent.StartsWith("[COMPILE_ERROR]", StringComparison.Ordinal))
+                    break;
+
+                var assistantMsg = messages[i - 1] as JObject;
+                if (assistantMsg == null) break;
+                if (assistantMsg["role"]?.ToString() != "assistant") break;
+                if (!IsPlainTextAssistantContent(assistantMsg["content"])) break;
+
+                messages.RemoveAt(i);          // user feedback
+                messages.RemoveAt(i - 1);      // assistant failed-code reply
+                pruned++;
+                i--; // step over the now-removed pair
+            }
+            return pruned;
+        }
+
+        private static bool IsPlainTextAssistantContent(JToken content)
+        {
+            if (content == null) return false;
+            if (content.Type == JTokenType.String) return true;
+            if (content is JArray arr)
+            {
+                foreach (JObject block in arr)
+                {
+                    string t = block["type"]?.ToString();
+                    if (t != "text") return false; // tool_use → keep, never prune
+                }
+                return true;
+            }
+            return false;
+        }
+
+        private static bool IsContextLengthError(string message)
+        {
+            if (string.IsNullOrEmpty(message)) return false;
+            return message.IndexOf("prompt is too long", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("context_length_exceeded", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   message.IndexOf("maximum context length", StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private static HttpClient CreateHttpClient()
+        {
+            var client = new HttpClient
+            {
+                Timeout = TimeSpan.FromMinutes(5)
+            };
+            return client;
+        }
     }
+
+    // ───────────────────────────── result types ─────────────────────────────
 
     public class LlmResponse
     {
@@ -974,6 +612,8 @@ namespace Bibim.Core
         public string ErrorMessage { get; set; }
         public int InputTokens { get; set; }
         public int OutputTokens { get; set; }
+        public int CachedInputTokens { get; set; }
+        public int CacheCreationInputTokens { get; set; }
         public bool IsContextLengthExceeded { get; set; }
     }
 
@@ -989,6 +629,8 @@ namespace Bibim.Core
         public int CompileAttempts { get; set; }
         public int TotalInputTokens { get; set; }
         public int TotalOutputTokens { get; set; }
+        public int TotalCachedInputTokens { get; set; }
+        public int TotalCacheCreationInputTokens { get; set; }
         public string DebugArtifactDirectory { get; set; }
         public bool IsContextLengthExceeded { get; set; }
     }
@@ -999,6 +641,8 @@ namespace Bibim.Core
         public string Model { get; set; }
         public int InputTokens { get; set; }
         public int OutputTokens { get; set; }
+        public int CachedInputTokens { get; set; }
+        public int CacheCreationInputTokens { get; set; }
         public long ElapsedMs { get; set; }
     }
 }

@@ -923,6 +923,7 @@ namespace Bibim.Core
         private string BuildTaskPlannerPrompt()
         {
             string outputLanguage = AppLanguage.IsEnglish ? "English" : "Korean";
+            string categoryChecklist = CategoryQuestionTemplates.BuildPlannerChecklist();
             return $@"You are the BIBIM task planner for a Revit add-in.
 Return JSON only. No markdown. No code fences. No explanations.
 
@@ -972,138 +973,7 @@ Question rules:
 - Options should be short, clear labels (not full sentences).
 - The user can also type a custom answer, so options don't need to cover every case.
 
-CATEGORY-SPECIFIC REQUIRED QUESTIONS:
-For the following task categories, you MUST ask these questions if the user has NOT already provided the information. Do NOT skip them unless the user explicitly delegates (""알아서해"", ""대충 해"", etc.).
-
-── CROSS-CUTTING: ask for ANY operation that targets ""all"" / ""모든"" or a broad category ──
-Scope:
-- Target range: current view only / current level / entire model
-- Include elements from linked models? (yes / no)
-- Phase filter: active phase only / all phases (ask only when the user explicitly mentions demolition, renovation, or multiple phases)
-
-── CROSS-CUTTING: ask for batch operations that may encounter existing elements ──
-Conflict / Duplicate Handling:
-- If the target element already has a tag / name / value: skip / overwrite / error and stop
-- If one item fails in a bulk operation: continue with the rest / roll back all
-
-── PLACEMENT ──
-Place / Create Instance:
-- Exact placement location (coordinates, level, host face, reference point)
-- Family type to place (if not specified)
-- Host type: level-based / wall-hosted / face-hosted (if ambiguous)
-- Orientation / rotation angle (if applicable)
-
-── MOVE / COPY / ARRAY ──
-Move:
-- Direction and distance (absolute coordinates vs relative offset)
-- Confirm target elements (current selection / by category / by filter)
-
-Copy / Array:
-- Linear or radial array
-- Specify by count+spacing, count+total length, or spacing only
-- Group the copies, or keep as individual instances
-
-Rotate:
-- Rotation axis (X / Y / Z or custom axis)
-- Rotation angle
-- Center of rotation (element center / origin / specific point)
-
-── PARAMETER ──
-Parameter Add / Modify:
-- Project parameter or Shared parameter
-  → If Shared: shared parameter file path and group name
-- Instance or Type parameter
-- Parameter group (Identity Data, Data, Dimensions, Text, etc.)
-- Binding categories (which element categories to attach to)
-- If parameter already exists: reuse / overwrite / error
-
-── VIEW & SHEET ──
-View Creation (Floor Plan / RCP / Section / Elevation / 3D):
-- Which level or reference (for plan views)
-- View Template to apply (none / project default / specific template)
-- View Range: cut plane height, top / bottom offset (ask only if the user mentions a specific cut height or the task involves mezzanine / split levels)
-- View name or naming convention
-
-Sheet Creation:
-- Title block family and type (REQUIRED if multiple exist in the project)
-- Sheet number and naming convention
-
-Placing Views on Sheets:
-- Which sheet (if not specified)
-- Viewport position on the sheet (center / specific coordinates)
-- View scale (if it differs from the current view scale)
-
-── ANNOTATION / TAG ──
-Tag / Annotation:
-- Which tag family to use (REQUIRED if multiple families exist for the category)
-- Leader line: yes or no
-- Placement: auto-center on element / offset position
-- Elements already tagged: skip / replace / add duplicate tag
-
-── DELETE ──
-Delete:
-- Confirm deletion target (to prevent accidental deletion)
-- How to handle dependent / hosted elements
-
-── EXPORT ──
-Export — PDF:
-- Output folder path (REQUIRED — ask if not specified)
-- Which sheets / views to export (if not specified)
-- Individual file per sheet, or combined into one PDF
-- Color or grayscale
-- Paper size (if not obvious from the project)
-
-Export — Excel / CSV (parameter schedule):
-- Output folder path (REQUIRED — ask if not specified)
-- Which categories to include (e.g. Walls, Doors, Windows, all)
-- Which parameters to use as columns (if not specified)
-- One sheet per category, or all categories in one sheet
-
-Export — DWG / DXF / IFC:
-- Output folder path (REQUIRED — ask if not specified)
-- Which views / sheets to export (if not specified)
-- Export settings / standard (if format-specific options matter)
-
-── SCHEDULE ──
-Schedule:
-- Purpose: create as a schedule view in the project, or export to file (Excel / CSV)?
-  → If exporting to file: also apply the Export — Excel / CSV questions below
-- Sort and group fields (if not specified)
-- Filter conditions (if any)
-
-── RENAME / RENUMBER ──
-Rename / Renumber:
-- Scope: selected elements / current view / entire model
-- Naming pattern (prefix, suffix, numbering format — e.g. A-##, 101, 101A)
-- Conflict handling when the new name already exists: skip / overwrite / error
-
-── WORKSET ──
-Workset:
-- Which workset to assign new elements to (ask only if workset names appear in [RESOLVED REVIT CONTEXT])
-
-── DISTANCE / PROXIMITY MEASUREMENT ──
-Any task that compares, filters, or measures distance between two element types (e.g. ""doors within X mm of walls"", ""columns closer than Y mm to beams""):
-- Reference point/line on element A: bounding box face / origin point / specific geometry face / connector
-- Reference point/line on element B: same options
-  → If the user specifies a sub-geometry reference (e.g. ""the outer edge of the window frame""), ask which specific face or sub-component to use, since family geometry varies per project.
-- Distance direction: closest point in any direction / perpendicular distance / horizontal only / vertical only
-
-── UNITS & COORDINATES ──
-Units / Coordinates:
-- Numeric input unit: millimeters / feet / project units (ask only when the unit is ambiguous from context)
-- Coordinate reference for export or shared-coordinate operations: Project Base Point or Survey Point
-
-── GEOMETRY CREATION ──
-Form Creation (Loft / Sweep / Blend):
-- Solid or Void
-- If profile count is large (> 20), confirm split strategy
-
-Grid / Level / Reference Plane Creation:
-- Grid spacing and count (X and Y directions separately for 2D grids)
-- Origin / center point or reference position for the grid layout
-- Grid naming convention (prefix, start number)
-- Extent / length of grid lines
-- Target level (for level-hosted grids)";
+{categoryChecklist}";
         }
 
         private string BuildPlannerInput(string userText, string resolvedText, TaskState activeTask)
@@ -1113,7 +983,15 @@ Grid / Level / Reference Plane Creation:
             {
                 recentHistory = _chatHistory
                     .Skip(Math.Max(0, _chatHistory.Count - PlannerContextWindow))
-                    .Select(m => $"{(m.IsUser ? "USER" : "ASSISTANT")}: {m.Text}")
+                    .Select(m =>
+                    {
+                        string text = m.Text ?? string.Empty;
+                        // Cap each turn so a single noisy turn (long code block, big
+                        // tool output) doesn't blow the planner prompt.
+                        if (text.Length > BibimConstants.PlannerHistoryTurnMaxChars)
+                            text = text.Substring(0, BibimConstants.PlannerHistoryTurnMaxChars) + "...";
+                        return $"{(m.IsUser ? "USER" : "ASSISTANT")}: {text}";
+                    })
                     .ToArray();
             }
 
@@ -1150,7 +1028,9 @@ Grid / Level / Reference Plane Creation:
 {BuildExecutionLogContext()}
 
 [RECENT CONVERSATION]
-{string.Join(Environment.NewLine, recentHistory)}";
+{string.Join(Environment.NewLine, recentHistory)}
+
+[Output format: respond with JSON only — no markdown, no commentary.]";
         }
 
         /// <summary>
@@ -1197,23 +1077,90 @@ Grid / Level / Reference Plane Creation:
                 }
             };
 
+            // First attempt — JSON-only output mode (Gemini / OpenAI native flag,
+            // Anthropic falls back to prompt instruction).
             var response = await planner.SendMessageNonStreamingAsync(
-                planningHistory, BuildTaskPlannerPrompt(), maxTokens: 1024, ct: ct);
+                planningHistory, BuildTaskPlannerPrompt(),
+                maxTokens: 1024, ct: ct, jsonMode: true);
             if (!response.Success || string.IsNullOrWhiteSpace(response.Text))
                 throw new InvalidOperationException(response.ErrorMessage ?? "Task planner failed.");
 
-            string json = ExtractJsonObject(response.Text);
+            // Parse with one retry on failure — Gemini occasionally truncates JSON
+            // mid-array even with native JSON mode, and stronger instruction usually
+            // recovers it on the second try.
+            TaskPlanResponse plan = TryParsePlan(response.Text, out string parseError);
+            if (plan == null)
+            {
+                Logger.Log("TaskPlanner",
+                    $"First parse failed ({parseError}); retrying with explicit JSON-only nudge");
+
+                var retryHistory = new List<ChatMessage>(planningHistory)
+                {
+                    new ChatMessage { Text = response.Text, IsUser = false },
+                    new ChatMessage
+                    {
+                        Text = "Your previous response was not valid JSON (parse error: " +
+                               parseError + "). " +
+                               "Return ONLY a single complete JSON object that matches the schema. " +
+                               "Do NOT use markdown. Do NOT use code fences. " +
+                               "Do NOT add any commentary before or after the JSON.",
+                        IsUser = true
+                    }
+                };
+
+                var retryResponse = await planner.SendMessageNonStreamingAsync(
+                    retryHistory, BuildTaskPlannerPrompt(),
+                    maxTokens: 1024, ct: ct, jsonMode: true);
+                if (!retryResponse.Success || string.IsNullOrWhiteSpace(retryResponse.Text))
+                    throw new InvalidOperationException(parseError);
+
+                plan = TryParsePlan(retryResponse.Text, out string retryError);
+                if (plan == null)
+                {
+                    Logger.Log("TaskPlanner", $"Retry parse also failed: {retryError}");
+                    throw new InvalidOperationException(retryError);
+                }
+            }
+
+            return plan;
+        }
+
+        /// <summary>
+        /// Try to extract + deserialize a TaskPlanResponse from raw model output.
+        /// Returns null with errorMessage set on failure so the caller can decide
+        /// whether to retry. Also normalises the questions array (string-form
+        /// fallback for older outputs).
+        /// </summary>
+        private TaskPlanResponse TryParsePlan(string rawText, out string errorMessage)
+        {
+            errorMessage = null;
+            string json = ExtractJsonObject(rawText);
             if (string.IsNullOrWhiteSpace(json))
-                throw new InvalidOperationException("Task planner returned non-JSON content.");
+            {
+                errorMessage = "Task planner returned non-JSON content.";
+                return null;
+            }
 
-            var plan = JsonHelper.Deserialize<TaskPlanResponse>(json);
+            TaskPlanResponse plan;
+            try
+            {
+                plan = JsonHelper.Deserialize<TaskPlanResponse>(json);
+            }
+            catch (Exception ex)
+            {
+                errorMessage = ex.Message;
+                return null;
+            }
+
             if (plan == null || string.IsNullOrWhiteSpace(plan.Mode))
-                throw new InvalidOperationException("Task planner returned an invalid payload.");
+            {
+                errorMessage = "Task planner returned an invalid payload.";
+                return null;
+            }
 
-            // Backward compatibility: if the LLM returned questions as plain strings
-            // instead of structured QuestionItem objects, Newtonsoft may deserialize them
-            // as QuestionItem with only partial fields. Also handle raw string arrays
-            // by re-parsing the questions array manually.
+            // Backward compatibility: questions may come back as plain strings or
+            // as QuestionItem objects with partial fields. Normalize manually so
+            // downstream UI always gets a clean list.
             try
             {
                 var jObj = Newtonsoft.Json.Linq.JObject.Parse(json);
@@ -1225,7 +1172,6 @@ Grid / Level / Reference Plane Creation:
                     {
                         if (item.Type == Newtonsoft.Json.Linq.JTokenType.String)
                         {
-                            // Plain string question — wrap in QuestionItem with no options
                             normalized.Add(new QuestionItem
                             {
                                 Text = item.ToString(),
@@ -1259,6 +1205,11 @@ Grid / Level / Reference Plane Creation:
         {
             if (string.IsNullOrWhiteSpace(text))
                 return null;
+
+            // Gemini sometimes wraps JSON in markdown fences despite responseMimeType=application/json
+            text = Regex.Replace(text, @"^\s*```(?:json)?\s*\n?", "", RegexOptions.Multiline);
+            text = Regex.Replace(text, @"\n?\s*```\s*$", "", RegexOptions.Multiline);
+            text = text.Trim();
 
             var match = Regex.Match(text, "\\{[\\s\\S]*\\}");
             return match.Success ? match.Value : null;
@@ -1679,11 +1630,11 @@ Constraints:
                             return;
                         }
 
-                        if (string.IsNullOrEmpty(LlmOrchestrationService.ResolveApiKey()))
+                        if (string.IsNullOrEmpty(ConfigService.GetActiveCredentials().ApiKey))
                         {
                             PostStreamingEndMessage(UiText(
-                                "Anthropic API key is not configured. Please go to **Settings** (gear icon) and enter your API key.",
-                                "Anthropic API 키가 설정되어 있지 않습니다. **설정** (톱니바퀴 아이콘)에서 API 키를 입력해 주세요."));
+                                "API key is not configured for the selected model. Please go to **Settings** (gear icon) and enter the matching API key.",
+                                "선택한 모델용 API 키가 설정되어 있지 않습니다. **설정** (톱니바퀴 아이콘)에서 해당 키를 입력해 주세요."));
                             return;
                         }
 
@@ -2440,23 +2391,41 @@ Constraints:
             _bridge.On("get_task_list", (_) => SendTaskList());
             _bridge.On("get_code_library", (_) => SendCodeLibrary());
             _bridge.On("get_api_key_status", (_) => SendApiKeyStatus());
+            // Anthropic / Claude — kept the legacy "save_api_key" name for back-compat with the frontend.
             RegisterSyncHandler("save_api_key", payload =>
             {
                 string newKey = payload["apiKey"]?.ToString() ?? "";
                 try
                 {
-                    ConfigService.SaveApiKey(newKey);
-                    // Reset cached LLM services so next call picks up new key
+                    ConfigService.SaveApiKeyForProvider("anthropic", newKey);
                     _llmService = null;
                     _plannerLlmService = null;
-                    Logger.Log("BridgeHandler", "API key saved successfully");
+                    Logger.Log("BridgeHandler", "Anthropic API key saved");
                     SendApiKeyStatus();
-                    _bridge.PostMessage("api_key_save_result", new { success = true });
+                    _bridge.PostMessage("api_key_save_result", new { success = true, provider = "anthropic" });
                 }
                 catch (Exception ex)
                 {
-                    Logger.Log("BridgeHandler", $"save_api_key failed: {ex.Message}");
-                    _bridge.PostMessage("api_key_save_result", new { success = false, error = ex.Message });
+                    Logger.Log("BridgeHandler", $"save_api_key (anthropic) failed: {ex.Message}");
+                    _bridge.PostMessage("api_key_save_result", new { success = false, provider = "anthropic", error = ex.Message });
+                }
+            });
+            RegisterSyncHandler("save_openai_api_key", payload =>
+            {
+                string newKey = payload["apiKey"]?.ToString() ?? "";
+                try
+                {
+                    ConfigService.SaveApiKeyForProvider("openai", newKey);
+                    _llmService = null;
+                    _plannerLlmService = null;
+                    Logger.Log("BridgeHandler", "OpenAI API key saved");
+                    SendApiKeyStatus();
+                    _bridge.PostMessage("api_key_save_result", new { success = true, provider = "openai" });
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log("BridgeHandler", $"save_openai_api_key failed: {ex.Message}");
+                    _bridge.PostMessage("api_key_save_result", new { success = false, provider = "openai", error = ex.Message });
                 }
             });
             RegisterSyncHandler("save_gemini_api_key", payload =>
@@ -2464,14 +2433,19 @@ Constraints:
                 string newKey = payload["apiKey"]?.ToString() ?? "";
                 try
                 {
-                    ConfigService.SaveGeminiApiKey(newKey);
-                    Logger.Log("BridgeHandler", "Gemini API key saved successfully");
+                    ConfigService.SaveApiKeyForProvider("gemini", newKey);
+                    _llmService = null;
+                    _plannerLlmService = null;
+                    Logger.Log("BridgeHandler", "Gemini API key saved");
                     SendApiKeyStatus();
+                    _bridge.PostMessage("api_key_save_result", new { success = true, provider = "gemini" });
+                    // Legacy event name retained for older frontend builds.
                     _bridge.PostMessage("gemini_key_save_result", new { success = true });
                 }
                 catch (Exception ex)
                 {
                     Logger.Log("BridgeHandler", $"save_gemini_api_key failed: {ex.Message}");
+                    _bridge.PostMessage("api_key_save_result", new { success = false, provider = "gemini", error = ex.Message });
                     _bridge.PostMessage("gemini_key_save_result", new { success = false, error = ex.Message });
                 }
             });
@@ -2609,17 +2583,26 @@ Constraints:
         {
             try
             {
-                string masked = ConfigService.GetMaskedApiKey();
-                bool configured = !string.IsNullOrEmpty(masked);
-                string claudeModel = ConfigService.GetRagConfig()?.ClaudeModel ?? "claude-sonnet-4-6";
-                string geminiMasked = ConfigService.GetMaskedGeminiApiKey();
-                bool geminiConfigured = !string.IsNullOrEmpty(geminiMasked);
+                string anthropicMasked = ConfigService.GetMaskedKeyForProvider("anthropic");
+                string openAiMasked    = ConfigService.GetMaskedKeyForProvider("openai");
+                string geminiMasked    = ConfigService.GetMaskedKeyForProvider("gemini");
+                string activeModel = ConfigService.GetRagConfig()?.ClaudeModel ?? ConfigService.DefaultModelId;
+                string activeProvider = ConfigService.GetActiveProviderName();
+
                 _bridge?.PostMessage("api_key_status", new
                 {
-                    configured,
-                    maskedKey = masked,
-                    claudeModel,
-                    geminiConfigured,
+                    // Aggregate active state — true if the *active provider* has a key.
+                    configured = !string.IsNullOrEmpty(ConfigService.GetActiveCredentials().ApiKey),
+                    activeProvider,
+                    activeModel,
+                    // Per-provider status for the UI's gated model selector.
+                    anthropic = new { configured = !string.IsNullOrEmpty(anthropicMasked), maskedKey = anthropicMasked },
+                    openai    = new { configured = !string.IsNullOrEmpty(openAiMasked),    maskedKey = openAiMasked },
+                    gemini    = new { configured = !string.IsNullOrEmpty(geminiMasked),    maskedKey = geminiMasked },
+                    // Legacy fields kept so older frontend builds keep rendering.
+                    maskedKey = anthropicMasked,
+                    claudeModel = activeModel,
+                    geminiConfigured = !string.IsNullOrEmpty(geminiMasked),
                     geminiMaskedKey = geminiMasked,
                 });
             }
@@ -2629,8 +2612,13 @@ Constraints:
                 _bridge?.PostMessage("api_key_status", new
                 {
                     configured = false,
+                    activeProvider = "anthropic",
+                    activeModel = ConfigService.DefaultModelId,
+                    anthropic = new { configured = false, maskedKey = "" },
+                    openai    = new { configured = false, maskedKey = "" },
+                    gemini    = new { configured = false, maskedKey = "" },
                     maskedKey = "",
-                    claudeModel = "claude-sonnet-4-6",
+                    claudeModel = ConfigService.DefaultModelId,
                     geminiConfigured = false,
                     geminiMaskedKey = "",
                 });
@@ -2791,13 +2779,14 @@ Constraints:
         {
             if (_llmService != null) return _llmService;
 
-            string apiKey = LlmOrchestrationService.ResolveApiKey();
+            var (provider, apiKey, modelId) = ConfigService.GetActiveCredentials();
             if (string.IsNullOrEmpty(apiKey))
                 throw new InvalidOperationException(
-                    "API key not found. Set it in rag_config.json or CLAUDE_API_KEY environment variable.");
+                    $"API key for provider '{provider}' not configured. " +
+                    $"Open Settings and add the matching key for model '{modelId}'.");
 
             var compiler = new RoslynCompilerService();
-            _llmService = new LlmOrchestrationService(apiKey, compiler);
+            _llmService = new LlmOrchestrationService(modelId, apiKey, compiler);
 
             // Wire streaming events to bridge
             _llmService.OnStreamingDelta += (delta) =>
@@ -2818,11 +2807,13 @@ Constraints:
 
             _llmService.OnTokenUsage += (info) =>
             {
-                TokenTracker.Track("chat", "claude", info.Model,
-                    info.InputTokens, info.OutputTokens, info.RequestId);
+                TokenTracker.Track("chat", _llmService.ProviderName, info.Model,
+                    info.InputTokens, info.OutputTokens, info.RequestId,
+                    info.CachedInputTokens, info.CacheCreationInputTokens);
             };
 
-            Logger.Log("BibimDockablePanel", "LlmOrchestrationService initialized");
+            Logger.Log("BibimDockablePanel",
+                $"LlmOrchestrationService initialized — provider={provider} model={modelId}");
             return _llmService;
         }
 
@@ -2834,16 +2825,18 @@ Constraints:
         {
             if (_plannerLlmService != null) return _plannerLlmService;
 
-            string apiKey = LlmOrchestrationService.ResolveApiKey();
+            var (provider, apiKey, modelId) = ConfigService.GetActiveCredentials();
             if (string.IsNullOrEmpty(apiKey))
                 throw new InvalidOperationException(
-                    "API key not found. Set it in rag_config.json or CLAUDE_API_KEY environment variable.");
+                    $"API key for provider '{provider}' not configured. " +
+                    $"Open Settings and add the matching key for model '{modelId}'.");
 
-            _plannerLlmService = new LlmOrchestrationService(apiKey, new RoslynCompilerService());
+            _plannerLlmService = new LlmOrchestrationService(modelId, apiKey, new RoslynCompilerService());
             _plannerLlmService.OnTokenUsage += (info) =>
             {
-                TokenTracker.Track("task_planner", "claude", info.Model,
-                    info.InputTokens, info.OutputTokens, info.RequestId);
+                TokenTracker.Track("task_planner", _plannerLlmService.ProviderName, info.Model,
+                    info.InputTokens, info.OutputTokens, info.RequestId,
+                    info.CachedInputTokens, info.CacheCreationInputTokens);
             };
 
             return _plannerLlmService;
@@ -2851,7 +2844,10 @@ Constraints:
 
         /// <summary>
         /// Returns a windowed slice of _chatHistory for LLM calls.
-        /// Keeps the most recent ChatHistoryMaxTurns messages to cap token cost.
+        /// Keeps the most recent ChatHistoryMaxTurns messages and prepends a
+        /// single synthetic "[Earlier session context]" turn that summarises any
+        /// turns that were dropped — so the model still has a bird's-eye view
+        /// of long sessions without paying the per-turn token cost.
         /// The full history is preserved in _chatHistory for session persistence.
         /// </summary>
         private List<ChatMessage> GetHistoryWindow()
@@ -2860,7 +2856,21 @@ Constraints:
             {
                 if (_chatHistory.Count <= ChatHistoryMaxTurns)
                     return _chatHistory.ToList();
-                return _chatHistory.Skip(_chatHistory.Count - ChatHistoryMaxTurns).ToList();
+
+                int dropCount = _chatHistory.Count - ChatHistoryMaxTurns;
+                var dropped = _chatHistory.Take(dropCount).ToList();
+                var kept = _chatHistory.Skip(dropCount).ToList();
+
+                string summary = HistorySummariser.Summarise(dropped, _sessionContext);
+                if (string.IsNullOrEmpty(summary))
+                    return kept;
+
+                var window = new List<ChatMessage>(kept.Count + 1)
+                {
+                    new ChatMessage { Text = summary, IsUser = true }
+                };
+                window.AddRange(kept);
+                return window;
             }
         }
 
@@ -2888,13 +2898,29 @@ Constraints:
                 string resolvedText = ResolveContextTags(userText);
                 TaskPlanResponse plan = null;
 
-                try
+                // Heuristic gate: greetings / acks / very short non-actionable messages
+                // never need the ~2,500-token planner system prompt. Skip the LLM call
+                // entirely and route straight to chat. Only safe when there is no
+                // active task that the user might be answering.
+                var activeTask = GetActiveTask();
+                bool hasActiveTask = activeTask != null && !IsTaskTerminal(activeTask);
+                bool skipPlanner = PlannerGate.ShouldSkipPlanner(userText, hasActiveTask);
+
+                if (skipPlanner)
                 {
-                    plan = await PlanUserIntentAsync(userText, resolvedText, ct);
+                    Logger.Log("TaskPlanner",
+                        $"Gate skipped LLM call (msg=\"{userText?.Substring(0, Math.Min(userText?.Length ?? 0, 24))}...\")");
                 }
-                catch (Exception planEx)
+                else
                 {
-                    Logger.Log("TaskPlanner", $"Falling back to direct chat: {planEx.Message}");
+                    try
+                    {
+                        plan = await PlanUserIntentAsync(userText, resolvedText, ct);
+                    }
+                    catch (Exception planEx)
+                    {
+                        Logger.Log("TaskPlanner", $"Falling back to direct chat: {planEx.Message}");
+                    }
                 }
 
                 lock (_chatHistoryLock) _chatHistory.Add(new ChatMessage { Text = resolvedText, IsUser = true });
@@ -3035,13 +3061,10 @@ Constraints:
         {
             string revitVersion = ConfigService.GetEffectiveRevitVersion();
             return CodeGenSystemPrompt.Build(revitVersion, isCodeGeneration);
-            // RAG context injection disabled — search_revit_api tool removed from OSS release.
-            // GeminiRagService retained for future re-enablement.
         }
 
         /// <summary>
         /// Build system prompt for plain chat (non-code-gen).
-        /// RAG injection disabled in OSS release — see GeminiRagService for future re-enablement.
         /// </summary>
         private Task<string> BuildSystemPromptWithRagAsync(
             string queryContext, bool isCodeGeneration, CancellationToken ct)
@@ -3217,9 +3240,25 @@ Constraints:
                 var llm = EnsureLlmService();
                 string taskPrompt = BuildTaskExecutionPrompt(task);
                 if (!string.IsNullOrWhiteSpace(additionalContext))
-                    taskPrompt += $"\n\n[Additional context]\n{additionalContext}";
+                {
+                    string trimmedContext = additionalContext.Length > BibimConstants.AdditionalContextMaxChars
+                        ? additionalContext.Substring(0, BibimConstants.AdditionalContextMaxChars) +
+                          "\n[...additional context truncated]"
+                        : additionalContext;
+                    taskPrompt += $"\n\n[Additional context]\n{trimmedContext}";
+                }
                 string revitVersion = ConfigService.GetEffectiveRevitVersion();
-                string systemPrompt = CodeGenSystemPrompt.Build(revitVersion, true)
+
+                // Only include the ~700-token FileOutputRules block when the task
+                // actually produces files. Most tasks (parameter edits, geometry
+                // moves, view tweaks) don't, so this saves a large chunk per call.
+                bool isFileOutput =
+                    CodeGenSystemPrompt.LooksLikeFileOutputTask(task?.Title) ||
+                    CodeGenSystemPrompt.LooksLikeFileOutputTask(task?.Summary) ||
+                    CodeGenSystemPrompt.LooksLikeFileOutputTask(task?.SourceUserMessage) ||
+                    CodeGenSystemPrompt.LooksLikeFileOutputTask(taskPrompt);
+
+                string systemPrompt = CodeGenSystemPrompt.Build(revitVersion, true, isFileOutput)
                     + CodeGenSystemPrompt.AppendToolUseInstructions();
                 debugDirectory = CodegenDebugRecorder.CreateRunDirectory(task.TaskId, Guid.NewGuid().ToString("N").Substring(0, 8), "task_codegen");
                 CodegenDebugRecorder.WriteJson(debugDirectory, "task_snapshot.json", CreateTaskDebugSnapshot(task));
@@ -3233,9 +3272,18 @@ Constraints:
                     new ChatMessage { Text = taskPrompt, IsUser = true }
                 };
 
+                // Build a context hint so we only ship Revit-context tools
+                // (get_view_info, get_selected_elements, etc.) when the task text
+                // actually mentions matching keywords.
+                string toolHint = string.Join(" ",
+                    task?.Title ?? "",
+                    task?.Summary ?? "",
+                    task?.SourceUserMessage ?? "",
+                    taskPrompt ?? "");
+
                 var agentResult = await llm.GenerateWithToolsAsync(
                     generationHistory, systemPrompt,
-                    BibimToolService.GetToolDefinitions(),
+                    BibimToolService.GetToolDefinitions(toolHint),
                     CreateToolService().ExecuteAsync,
                     maxTurns: 15, debugDirectory, ct);
 
@@ -3423,7 +3471,26 @@ Constraints:
                 var llm = EnsureLlmService();
 
                 string revitVersion2 = ConfigService.GetEffectiveRevitVersion();
-                string systemPrompt = CodeGenSystemPrompt.Build(revitVersion2, true)
+
+                // Inspect the last few user messages for file-output keywords
+                // (no task object here — spec flow drives codegen straight from chat history).
+                bool specIsFileOutput = false;
+                lock (_chatHistoryLock)
+                {
+                    int scan = Math.Min(_chatHistory.Count, 6);
+                    for (int i = _chatHistory.Count - scan; i < _chatHistory.Count; i++)
+                    {
+                        if (i < 0) continue;
+                        if (_chatHistory[i].IsUser &&
+                            CodeGenSystemPrompt.LooksLikeFileOutputTask(_chatHistory[i].Text))
+                        {
+                            specIsFileOutput = true;
+                            break;
+                        }
+                    }
+                }
+
+                string systemPrompt = CodeGenSystemPrompt.Build(revitVersion2, true, specIsFileOutput)
                     + CodeGenSystemPrompt.AppendToolUseInstructions();
 
                 _analyzerService.SetRevitVersion(revitVersion2);
@@ -3435,9 +3502,14 @@ Constraints:
                     "spec", Guid.NewGuid().ToString("N").Substring(0, 8), "spec_codegen");
                 CodegenDebugRecorder.WriteText(specDebugDir, "system_prompt.txt", systemPrompt);
 
+                // Use the most recent user message(s) as the tool-hint so we only
+                // ship Revit-context tools that the spec actually needs.
+                string specToolHint = string.Join(" ",
+                    specHistory.Where(m => m.IsUser).Select(m => m.Text ?? "").Reverse().Take(3));
+
                 var agentResult = await llm.GenerateWithToolsAsync(
                     specHistory, systemPrompt,
-                    BibimToolService.GetToolDefinitions(),
+                    BibimToolService.GetToolDefinitions(specToolHint),
                     CreateToolService().ExecuteAsync,
                     maxTurns: 15, specDebugDir, ct);
 

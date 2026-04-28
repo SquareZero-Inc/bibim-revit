@@ -1,4 +1,6 @@
 ﻿// Copyright (c) 2026 SquareZero Inc. â€” Licensed under Apache 2.0. See LICENSE in the repo root.
+using System;
+
 namespace Bibim.Core
 {
     /// <summary>
@@ -10,13 +12,19 @@ namespace Bibim.Core
         /// <summary>
         /// Build the system prompt for the LLM.
         /// </summary>
-        public static string Build(string revitVersion, bool isCodeGeneration)
+        /// <param name="revitVersion">Target Revit version for API guidance.</param>
+        /// <param name="isCodeGeneration">Include code-generation rules.</param>
+        /// <param name="isFileOutput">Include the ~700-token FILE OUTPUT RULES block.
+        /// Only set this when the task actually exports/writes files (PDF, DWG, DXF,
+        /// CSV, IFC, Excel, image, etc.). For parameter edits, geometry moves, and
+        /// other in-model changes these rules are dead weight.</param>
+        public static string Build(string revitVersion, bool isCodeGeneration, bool isFileOutput = false)
         {
             string prompt = BuildBasePrompt(revitVersion);
 
             if (isCodeGeneration)
             {
-                prompt += BuildFileOutputRules();
+                if (isFileOutput) prompt += BuildFileOutputRules();
                 prompt += BuildCodeGenerationRules();
             }
 
@@ -32,6 +40,28 @@ namespace Bibim.Core
             }
 
             return prompt;
+        }
+
+        /// <summary>
+        /// Heuristic: does this task description mention any file-output operation?
+        /// Used by the codegen path to decide whether to include FileOutputRules.
+        /// </summary>
+        public static bool LooksLikeFileOutputTask(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            // Match common export keywords across EN and KR. Keep this list tight —
+            // false negatives just mean a touch more retries; false positives only
+            // re-add the rules we already had before.
+            string[] markers = {
+                "export", "PDF", "DWG", "DXF", "CSV", "IFC", "Excel", ".xlsx", ".xls",
+                "image", "png", "jpg", "schedule export", "save to file", "write to file",
+                "내보내기", "저장", "출력", "파일", "이미지"
+            };
+            foreach (var m in markers)
+            {
+                if (text.IndexOf(m, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            }
+            return false;
         }
 
         /// <summary>
@@ -111,6 +141,29 @@ CODE RULES:
    Using ""var ctx ="", ""BibimExecutionContext ctx ="", or ""new BibimExecutionContext()"" will also cause CS0128 — ctx is already injected as the second parameter.
    When writing a complete class (full compilation unit), ALWAYS include ctx in the Execute signature:
    public static object Execute(Autodesk.Revit.UI.UIApplication uiApp, Bibim.Core.BibimExecutionContext ctx)
+
+SELECTION-PRIORITY RULE (CRITICAL — applies BEFORE any element query):
+If the user message uses any of these reference patterns, the user is pointing at the
+CURRENT Revit selection — NOT asking for a model-wide query:
+- English: ""these"", ""this"", ""them"", ""those"", ""selected"", ""the selection"",
+  ""this element"", ""these elements"", ""my selection"", ""SelectedElements""
+- Korean: ""이거"", ""이것들"", ""이"", ""얘들"", ""선택된"", ""선택한"", ""선택 요소"",
+  ""이 요소"", ""이 도어"", ""이 벽"" (지시어 + 명사 패턴)
+
+When ANY of those patterns appears:
+  a) The target element set MUST come from `uidoc.Selection.GetElementIds()`.
+  b) If you also need to filter by category/type within the selection, intersect with
+     `FilteredElementCollector(doc, selectedIds)` — NEVER query the whole model.
+  c) NEVER fall back to `new FilteredElementCollector(doc).OfCategory(...)` for the
+     target set — that ignores the user's selection and silently changes the wrong
+     elements (or zero elements if no instances of that category exist outside the
+     selection).
+  d) If `selectedIds.Count == 0`, return early with an explanatory message via
+     `ctx.Log()` and a string return value telling the user to select elements first.
+     Do NOT guess and run model-wide.
+
+This rule overrides any other ""use FilteredElementCollector for queries"" guidance
+when the user uses selection-pointing language.
 
 CAD IMPORT / LINK TASKS:
 When the task involves reading data from an imported or linked CAD file (DWG/DXF) —

@@ -21,9 +21,12 @@ namespace Bibim.Core
             public string RagStore { get; set; }
             public string RevitVersion { get; set; }
             public string DynamoVersion { get; set; }
-            public string ClaudeModel { get; set; }
-            public string GeminiModel { get; set; }
-            public string ClaudeApiKey { get; set; }
+            public string ClaudeModel { get; set; }       // selected model id (kept as "claude_model" key for back-compat — may hold gpt-5.5 / gemini-* in v1.1+)
+            public string GeminiModel { get; set; }       // legacy RAG-era field; not used by LLM in v1.1+
+            // Multi-provider LLM keys (v1.1.0+). ClaudeApiKey kept as alias for AnthropicApiKey for migration.
+            public string AnthropicApiKey { get; set; }
+            public string ClaudeApiKey { get; set; }      // legacy alias — same value as AnthropicApiKey
+            public string OpenAiApiKey { get; set; }
             public string GeminiApiKey { get; set; }
             public bool ValidationGateEnabled { get; set; }
             public bool AutoFixEnabled { get; set; }
@@ -36,6 +39,24 @@ namespace Bibim.Core
             public Dictionary<string, string> Stores { get; set; }
             public string FallbackStore { get; set; }
         }
+
+        /// <summary>
+        /// Models exposed in the UI in v1.1.0. Order = display order in selectors.
+        /// </summary>
+        public static readonly (string Id, string Label, string Provider)[] AvailableModels =
+        {
+            ("claude-sonnet-4-6",          "Claude Sonnet 4.6",  "anthropic"),
+            ("claude-opus-4-7",             "Claude Opus 4.7",    "anthropic"),
+            ("gpt-5.5",                     "GPT-5.5",            "openai"),
+            // Vanilla 3.1 Pro — the customtools variant silently misbehaves
+            // on JSON-only output without registered tools (planner case).
+            ("gemini-3.1-pro-preview",      "Gemini 3.1 Pro",     "gemini"),
+        };
+
+        /// <summary>
+        /// Default model when none is configured.
+        /// </summary>
+        public const string DefaultModelId = "claude-sonnet-4-6";
 
         public static RagConfig GetRagConfig()
         {
@@ -233,7 +254,7 @@ namespace Bibim.Core
         {
             string store = null, version = null, dynamoVersion = null;
             string claudeModel = null, geminiModel = null;
-            string claudeApiKey = null, geminiApiKey = null;
+            string anthropicApiKey = null, openAiApiKey = null, geminiApiKey = null;
             string fallbackStore = null;
             Dictionary<string, string> stores = null;
             bool validationGateEnabled = true, autoFixEnabled = true, verifyStageEnabled = false, enableApiXmlHints = true;
@@ -256,16 +277,52 @@ namespace Bibim.Core
                 claudeModel = obj["claude_model"]?.ToString();
                 geminiModel = obj["gemini_model"]?.ToString();
 
+                // Migration: the customtools variant of Gemini 3.1 Pro is specialized
+                // for agentic workflows with registered tools and silently misbehaves
+                // on JSON-only output without tools (planner case). Vanilla variant
+                // is the supported choice. Migrate existing configs in place + rewrite
+                // disk so old saved configs upgrade automatically on next launch.
+                if (string.Equals(claudeModel, "gemini-3.1-pro-preview-customtools",
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    claudeModel = "gemini-3.1-pro-preview";
+                    try
+                    {
+                        obj["claude_model"] = claudeModel;
+                        // One-time migration backup to mirror SaveApiKeyForProvider behaviour.
+                        string bakPath = configPath + ".bak";
+                        if (!File.Exists(bakPath))
+                        {
+                            try { File.Copy(configPath, bakPath); } catch { /* non-fatal */ }
+                        }
+                        File.WriteAllText(configPath, obj.ToString(Newtonsoft.Json.Formatting.Indented));
+                        Logger.Log("ConfigService",
+                            "Migrated saved model id 'gemini-3.1-pro-preview-customtools' → 'gemini-3.1-pro-preview' (rewrote rag_config.json).");
+                    }
+                    catch (Exception migEx)
+                    {
+                        Logger.Log("ConfigService",
+                            $"In-memory migration applied; disk rewrite skipped: {migEx.Message}");
+                    }
+                }
+
                 if (obj["api_keys"] is JObject apiKeys)
                 {
-                    claudeApiKey = apiKeys["claude_api_key"]?.ToString();
-                    geminiApiKey = apiKeys["gemini_api_key"]?.ToString();
+                    // Read new canonical key names; fall back to legacy claude_api_key for migration.
+                    anthropicApiKey = apiKeys["anthropic_api_key"]?.ToString()
+                                   ?? apiKeys["claude_api_key"]?.ToString();
+                    openAiApiKey   = apiKeys["openai_api_key"]?.ToString();
+                    geminiApiKey   = apiKeys["gemini_api_key"]?.ToString();
                 }
 
                 // Environment variable overrides — takes precedence over config file values.
                 // Useful for CI/CD, installer distribution, or when rag_config.json is absent.
-                string envClaude = Environment.GetEnvironmentVariable("CLAUDE_API_KEY");
-                if (!string.IsNullOrEmpty(envClaude)) claudeApiKey = envClaude;
+                string envAnthropic = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY")
+                                   ?? Environment.GetEnvironmentVariable("CLAUDE_API_KEY");
+                if (!string.IsNullOrEmpty(envAnthropic)) anthropicApiKey = envAnthropic;
+
+                string envOpenAi = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
+                if (!string.IsNullOrEmpty(envOpenAi)) openAiApiKey = envOpenAi;
 
                 string envGemini = Environment.GetEnvironmentVariable("GEMINI_API_KEY");
                 if (!string.IsNullOrEmpty(envGemini)) geminiApiKey = envGemini;
@@ -296,9 +353,9 @@ namespace Bibim.Core
                 throw new InvalidOperationException($"Failed to load rag_config.json: {ex.Message}", ex);
             }
 
-            // Only claude_model is required. store/version are optional (RAG is optional in BYOK mode).
+            // claude_model is optional in v1.1+ — fall back to default if missing.
             if (string.IsNullOrEmpty(claudeModel))
-                throw new InvalidOperationException("rag_config.json missing required value: claude_model.");
+                claudeModel = DefaultModelId;
 
             return new RagConfig
             {
@@ -307,9 +364,10 @@ namespace Bibim.Core
                 DynamoVersion = dynamoVersion ?? "Unknown",
                 ClaudeModel = claudeModel,
                 GeminiModel = geminiModel ?? "",
-                ClaudeApiKey = claudeApiKey,
+                AnthropicApiKey = anthropicApiKey,
+                ClaudeApiKey = anthropicApiKey,        // legacy alias — same value
+                OpenAiApiKey = openAiApiKey,
                 GeminiApiKey = geminiApiKey,
-                // SupabaseUrl / SupabaseAnonKey intentionally omitted — Supabase removed in OSS build (Phase 2)
                 Stores = stores,
                 FallbackStore = fallbackStore ?? store,
                 ValidationGateEnabled = validationGateEnabled,
@@ -321,5 +379,125 @@ namespace Bibim.Core
             };
         }
 
+        // ────────────────────────────────────────────────────────────
+        // v1.1.0 multi-provider helpers
+        // ────────────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Returns the provider name resolved from the currently configured model id.
+        /// Falls back to "anthropic" if the model is unknown.
+        /// </summary>
+        public static string GetActiveProviderName()
+        {
+            string modelId = GetRagConfig()?.ClaudeModel ?? DefaultModelId;
+            return LlmProviderFactory.ResolveProviderForModel(modelId) ?? "anthropic";
+        }
+
+        /// <summary>
+        /// Resolve the active credentials: (providerName, apiKey, modelId).
+        /// apiKey is null if the user hasn't configured a key for the active provider.
+        /// </summary>
+        public static (string Provider, string ApiKey, string ModelId) GetActiveCredentials()
+        {
+            var cfg = GetRagConfig();
+            string modelId = cfg?.ClaudeModel ?? DefaultModelId;
+            string provider = LlmProviderFactory.ResolveProviderForModel(modelId) ?? "anthropic";
+            string apiKey = GetApiKeyForProvider(provider, cfg);
+            return (provider, apiKey, modelId);
+        }
+
+        /// <summary>
+        /// Look up the API key stored for a given provider name. Returns null if absent.
+        /// </summary>
+        public static string GetApiKeyForProvider(string providerName, RagConfig cfg = null)
+        {
+            cfg = cfg ?? GetRagConfig();
+            if (cfg == null) return null;
+            switch (providerName)
+            {
+                case "anthropic": return cfg.AnthropicApiKey;
+                case "openai":    return cfg.OpenAiApiKey;
+                case "gemini":    return cfg.GeminiApiKey;
+                default:          return null;
+            }
+        }
+
+        /// <summary>
+        /// Returns which provider names currently have a non-empty API key configured.
+        /// Used by the Settings UI to gate model availability.
+        /// </summary>
+        public static bool HasKeyForProvider(string providerName)
+        {
+            string key = GetApiKeyForProvider(providerName);
+            return !string.IsNullOrWhiteSpace(key) && key != "CLAUDE_API_KEY_HERE"
+                && key != "OPENAI_API_KEY_HERE" && key != "GEMINI_API_KEY_HERE";
+        }
+
+        /// <summary>
+        /// Save an API key for a specific provider. Writes to api_keys.{anthropic|openai|gemini}_api_key.
+        /// For backwards compat, anthropic also mirrors to claude_api_key.
+        /// </summary>
+        public static void SaveApiKeyForProvider(string providerName, string apiKey)
+        {
+            if (string.IsNullOrWhiteSpace(providerName))
+                throw new ArgumentException("Provider name required.");
+            if (string.IsNullOrWhiteSpace(apiKey))
+                throw new ArgumentException("API key must not be empty.");
+
+            string configPath = GetConfigPath();
+
+            // One-time migration backup
+            if (File.Exists(configPath))
+            {
+                string bakPath = configPath + ".bak";
+                if (!File.Exists(bakPath))
+                {
+                    try { File.Copy(configPath, bakPath); } catch { /* non-fatal */ }
+                }
+            }
+
+            var obj = ReadConfigJson(configPath);
+            if (obj["api_keys"] == null) obj["api_keys"] = new JObject();
+            var apiKeys = (JObject)obj["api_keys"];
+
+            string trimmedKey = apiKey.Trim();
+            switch (providerName)
+            {
+                case "anthropic":
+                    apiKeys["anthropic_api_key"] = trimmedKey;
+                    apiKeys["claude_api_key"] = trimmedKey;   // legacy mirror for any older readers
+                    break;
+                case "openai":
+                    apiKeys["openai_api_key"] = trimmedKey;
+                    break;
+                case "gemini":
+                    apiKeys["gemini_api_key"] = trimmedKey;
+                    break;
+                default:
+                    throw new ArgumentException($"Unknown provider: {providerName}");
+            }
+
+            // Default model on first-time setup so GetRagConfig() doesn't fall back unexpectedly
+            if (string.IsNullOrEmpty(obj["claude_model"]?.ToString()))
+                obj["claude_model"] = DefaultModelId;
+
+            File.WriteAllText(configPath, obj.ToString(Newtonsoft.Json.Formatting.Indented));
+            ClearCache();
+        }
+
+        /// <summary>
+        /// Returns a masked API key for display (e.g. "sk-ant-ap...Ab3c").
+        /// </summary>
+        public static string GetMaskedKeyForProvider(string providerName)
+        {
+            try
+            {
+                string key = GetApiKeyForProvider(providerName) ?? "";
+                if (string.IsNullOrEmpty(key)) return "";
+                if (key.Length <= 12) return new string('*', key.Length);
+                return key.Substring(0, 8) + "..." + key.Substring(key.Length - 4);
+            }
+            catch { return ""; }
+        }
     }
 }

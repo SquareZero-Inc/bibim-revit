@@ -119,16 +119,20 @@ export default function App() {
 
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 'var(--space-sm)' }}>
             <SettingsPanel
-              apiKeyConfigured={chat.apiKeyConfigured}
-              apiKeyMasked={chat.apiKeyMasked}
-              onSaveApiKey={chat.saveApiKey}
-              saveResult={chat.apiKeySaveResult}
-              claudeModel={chat.claudeModel}
-              onSaveModel={chat.saveModel}
+              anthropicConfigured={chat.anthropicConfigured}
+              anthropicMasked={chat.anthropicMasked}
+              onSaveAnthropicKey={chat.saveAnthropicApiKey}
+              anthropicSaveResult={chat.anthropicSaveResult}
+              openaiConfigured={chat.openaiConfigured}
+              openaiMasked={chat.openaiMasked}
+              onSaveOpenAiKey={chat.saveOpenAiApiKey}
+              openaiSaveResult={chat.openaiSaveResult}
               geminiConfigured={chat.geminiConfigured}
               geminiMasked={chat.geminiMasked}
-              onSaveGeminiApiKey={chat.saveGeminiApiKey}
+              onSaveGeminiKey={chat.saveGeminiApiKey}
               geminiSaveResult={chat.geminiKeySaveResult}
+              activeModel={chat.claudeModel}
+              onSaveModel={chat.saveModel}
               onOpenUrl={(url) => sendToBackend('open_url', { url })}
             />
           </div>
