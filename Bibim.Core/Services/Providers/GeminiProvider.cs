@@ -257,14 +257,21 @@ namespace Bibim.Core
                                 break;
 
                             case "tool_use":
-                                parts.Add(new JObject
                                 {
-                                    ["functionCall"] = new JObject
+                                    var fnCall = new JObject
                                     {
                                         ["name"] = block["name"]?.ToString(),
                                         ["args"] = block["input"] ?? new JObject()
-                                    }
-                                });
+                                    };
+                                    // Echo back the thoughtSignature captured from the
+                                    // original Gemini response. Required for Gemini 3.x —
+                                    // missing it fails the next turn with HTTP 400
+                                    // "missing thought_signature". See BIBIM-006.
+                                    JToken sig = block["_geminiThoughtSignature"];
+                                    if (sig != null && sig.Type != JTokenType.Null)
+                                        fnCall["thoughtSignature"] = sig;
+                                    parts.Add(new JObject { ["functionCall"] = fnCall });
+                                }
                                 break;
 
                             case "tool_result":
@@ -354,13 +361,24 @@ namespace Bibim.Core
                         {
                             var fnCall = part["functionCall"];
                             string syntheticId = $"gemini_call_{Guid.NewGuid():N}".Substring(0, 24);
-                            content.Add(new JObject
+                            var toolUse = new JObject
                             {
                                 ["type"] = "tool_use",
                                 ["id"] = syntheticId,
                                 ["name"] = fnCall["name"]?.ToString(),
                                 ["input"] = fnCall["args"] ?? new JObject()
-                            });
+                            };
+                            // Gemini 3.x thinking models attach a thoughtSignature on the
+                            // first functionCall part of each step (sometimes also on
+                            // sequential calls). It MUST be echoed back when the assistant
+                            // turn is replayed in subsequent requests, otherwise Gemini
+                            // returns 400 "missing thought_signature". We stash it on the
+                            // tool_use block under a Gemini-private field that other
+                            // providers (Anthropic / OpenAI) silently ignore.
+                            JToken sigToken = part["thoughtSignature"];
+                            if (sigToken != null && sigToken.Type != JTokenType.Null)
+                                toolUse["_geminiThoughtSignature"] = sigToken;
+                            content.Add(toolUse);
                             stopReason = "tool_use";
                             callCounter++;
                         }
