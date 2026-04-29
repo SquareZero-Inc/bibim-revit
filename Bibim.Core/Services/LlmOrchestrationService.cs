@@ -233,12 +233,16 @@ namespace Bibim.Core
                     JObject response;
                     try
                     {
-                        // 4096 is generous for a single C# code block (a 1000-line
-                        // generated method comes in well under 3k output tokens) and
-                        // also covers tool_use turns, which are typically <200 tokens.
-                        // The continuation handler below catches any rare truncation.
+                        // 8192 ceiling. max_tokens is a HARD LIMIT — providers bill by
+                        // actual emitted tokens, not by ceiling, so a higher cap costs
+                        // nothing when the model emits less. The earlier 4096 cap was
+                        // tight for reasoning models (GPT-5.5 / Sonnet 4.6) which often
+                        // emit ~3-5k of pre-tool reasoning + tool_use + commentary on
+                        // multi-step requests with long history, hitting truncation
+                        // mid-response. The Fix B coercion below handles the rare
+                        // post-8192 truncation correctly even when it does happen.
                         response = await _provider.SendNonStreamingAsync(
-                            messages, systemPrompt, toolDefinitions, ct, 4096);
+                            messages, systemPrompt, toolDefinitions, ct, 8192);
                     }
                     catch (Exception ex)
                     {
@@ -273,6 +277,36 @@ namespace Bibim.Core
 
                     string stopReason = response["stop_reason"]?.ToString();
                     var content = response["content"] as JArray ?? new JArray();
+
+                    // ── BIBIM-007 — Defensive tool_use coercion ──
+                    // Providers may emit a complete tool_use block then truncate
+                    // trailing text — both Anthropic and OpenAI then reject the
+                    // next turn unless the tool_use is paired with a tool_result.
+                    // If we honored the truncation signal naively, we'd push the
+                    // assistant content (with tool_use) followed by a plain
+                    // "continue" user message, which fails 400 on the next call.
+                    //
+                    // Whenever content contains any tool_use block, force the
+                    // tool_use branch regardless of the reported stop_reason —
+                    // executing the tool produces the required pairing and the
+                    // model's next response can pick up from the tool_result.
+                    bool hasToolUse = false;
+                    foreach (var block in content)
+                    {
+                        if (block is JObject blockObj &&
+                            blockObj["type"]?.ToString() == "tool_use")
+                        {
+                            hasToolUse = true;
+                            break;
+                        }
+                    }
+                    if (hasToolUse && stopReason != "tool_use")
+                    {
+                        Logger.Log("LlmOrchestration",
+                            $"rid={requestId} turn={turn} provider reported stop_reason={stopReason} " +
+                            "but content has tool_use blocks; coercing to tool_use to preserve pairing");
+                        stopReason = "tool_use";
+                    }
 
                     // ── end_turn / max_tokens: model finished or was truncated ──
                     if (stopReason == "end_turn" || stopReason == "max_tokens")
