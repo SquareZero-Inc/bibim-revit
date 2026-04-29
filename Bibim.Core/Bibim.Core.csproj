@@ -23,7 +23,7 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <AppendTargetFrameworkToOutputPath>true</AppendTargetFrameworkToOutputPath>
     <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
-    <Version>1.0.2</Version>
+    <Version>1.0.3</Version>
     <BuildId Condition="'$(BuildId)' == ''">local</BuildId>
     <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(Version)+$(BuildId)</InformationalVersion>
     <Authors>BIBIM AI</Authors>
