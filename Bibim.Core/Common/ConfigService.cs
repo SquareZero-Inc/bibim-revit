@@ -28,6 +28,14 @@ namespace Bibim.Core
             public string ClaudeApiKey { get; set; }      // legacy alias — same value as AnthropicApiKey
             public string OpenAiApiKey { get; set; }
             public string GeminiApiKey { get; set; }
+            // Self-hosted local LLM (v1.1+). Server runs an OpenAI-compatible
+            // /v1/chat/completions endpoint (Ollama / LM Studio / vLLM / llama.cpp server).
+            // ApiKey is optional — only needed for authenticated self-hosted setups.
+            // ModelName is the literal name the local server expects (may differ from
+            // the canonical OpenRouter id stored in ClaudeModel).
+            public string LocalServerUrl { get; set; }
+            public string LocalApiKey { get; set; }
+            public string LocalModelName { get; set; }
             public bool ValidationGateEnabled { get; set; }
             public bool AutoFixEnabled { get; set; }
             public int AutoFixMaxAttempts { get; set; }
@@ -51,6 +59,14 @@ namespace Bibim.Core
             // Vanilla 3.1 Pro — the customtools variant silently misbehaves
             // on JSON-only output without registered tools (planner case).
             ("gemini-3.1-pro-preview",      "Gemini 3.1 Pro",     "gemini"),
+            // Local self-hosted OSS models. IDs follow OpenRouter convention so the
+            // existing model selector / debug logging remains uniform. Each id below
+            // was validated end-to-end via OpenRouter against the Revit 2024 BIBIM
+            // smoke matrix (see seeewd/bibim-revit benchmarks). Gemma 4 26B was the
+            // strongest non-Claude candidate (14/15 runtime success).
+            ("google/gemma-4-26b-a4b-it",            "Gemma 4 26B A4B IT (Local)",          "local"),
+            ("meta-llama/llama-3.3-70b-instruct",    "Llama 3.3 70B Instruct (Local)",      "local"),
+            ("mistralai/codestral-2508",             "Codestral 2508 (Local)",              "local"),
         };
 
         /// <summary>
@@ -254,7 +270,8 @@ namespace Bibim.Core
         {
             string store = null, version = null, dynamoVersion = null;
             string claudeModel = null, geminiModel = null;
-            string anthropicApiKey = null, openAiApiKey = null, geminiApiKey = null;
+            string anthropicApiKey = null, openAiApiKey = null, geminiApiKey = null, localApiKey = null;
+            string localServerUrl = null, localModelName = null;
             string fallbackStore = null;
             Dictionary<string, string> stores = null;
             bool validationGateEnabled = true, autoFixEnabled = true, verifyStageEnabled = false, enableApiXmlHints = true;
@@ -313,6 +330,13 @@ namespace Bibim.Core
                                    ?? apiKeys["claude_api_key"]?.ToString();
                     openAiApiKey   = apiKeys["openai_api_key"]?.ToString();
                     geminiApiKey   = apiKeys["gemini_api_key"]?.ToString();
+                    localApiKey    = apiKeys["local_api_key"]?.ToString();
+                }
+
+                if (obj["local"] is JObject localObj)
+                {
+                    localServerUrl = localObj["server_url"]?.ToString();
+                    localModelName = localObj["model_name"]?.ToString();
                 }
 
                 // Environment variable overrides — takes precedence over config file values.
@@ -326,6 +350,14 @@ namespace Bibim.Core
 
                 string envGemini = Environment.GetEnvironmentVariable("GEMINI_API_KEY");
                 if (!string.IsNullOrEmpty(envGemini)) geminiApiKey = envGemini;
+
+                // Local LLM env overrides (CI / scripted installs / cloud GPU rentals)
+                string envLocalUrl = Environment.GetEnvironmentVariable("BIBIM_LOCAL_LLM_URL");
+                if (!string.IsNullOrEmpty(envLocalUrl)) localServerUrl = envLocalUrl;
+                string envLocalKey = Environment.GetEnvironmentVariable("BIBIM_LOCAL_LLM_API_KEY");
+                if (!string.IsNullOrEmpty(envLocalKey)) localApiKey = envLocalKey;
+                string envLocalModel = Environment.GetEnvironmentVariable("BIBIM_LOCAL_LLM_MODEL");
+                if (!string.IsNullOrEmpty(envLocalModel)) localModelName = envLocalModel;
 
                 fallbackStore = obj["fallback_store"]?.ToString();
 
@@ -368,6 +400,9 @@ namespace Bibim.Core
                 ClaudeApiKey = anthropicApiKey,        // legacy alias — same value
                 OpenAiApiKey = openAiApiKey,
                 GeminiApiKey = geminiApiKey,
+                LocalServerUrl = localServerUrl,
+                LocalApiKey = localApiKey,
+                LocalModelName = localModelName,
                 Stores = stores,
                 FallbackStore = fallbackStore ?? store,
                 ValidationGateEnabled = validationGateEnabled,
@@ -418,6 +453,10 @@ namespace Bibim.Core
                 case "anthropic": return cfg.AnthropicApiKey;
                 case "openai":    return cfg.OpenAiApiKey;
                 case "gemini":    return cfg.GeminiApiKey;
+                // For "local", a key is OPTIONAL — most self-hosted setups (Ollama default,
+                // LM Studio default) accept unauthenticated requests. Returning the value
+                // (which may be empty) lets the caller decide whether to add a bearer header.
+                case "local":     return cfg.LocalApiKey;
                 default:          return null;
             }
         }
@@ -425,9 +464,17 @@ namespace Bibim.Core
         /// <summary>
         /// Returns which provider names currently have a non-empty API key configured.
         /// Used by the Settings UI to gate model availability.
+        /// For "local", availability is gated by Server URL (key is optional).
         /// </summary>
         public static bool HasKeyForProvider(string providerName)
         {
+            // Local availability rule is different: URL configured == provider available.
+            if (providerName == "local")
+            {
+                string url = GetRagConfig()?.LocalServerUrl;
+                return !string.IsNullOrWhiteSpace(url);
+            }
+
             string key = GetApiKeyForProvider(providerName);
             return !string.IsNullOrWhiteSpace(key) && key != "CLAUDE_API_KEY_HERE"
                 && key != "OPENAI_API_KEY_HERE" && key != "GEMINI_API_KEY_HERE";
@@ -478,6 +525,47 @@ namespace Bibim.Core
             }
 
             // Default model on first-time setup so GetRagConfig() doesn't fall back unexpectedly
+            if (string.IsNullOrEmpty(obj["claude_model"]?.ToString()))
+                obj["claude_model"] = DefaultModelId;
+
+            File.WriteAllText(configPath, obj.ToString(Newtonsoft.Json.Formatting.Indented));
+            ClearCache();
+        }
+
+        /// <summary>
+        /// Save the local LLM server config: base URL (required), model name (sent
+        /// to the server, may differ from the canonical OpenRouter id), and optional
+        /// API key for authenticated self-hosted setups (vLLM --api-key, sssh proxy,
+        /// cloud GPU rental, etc.). Passing null/empty for a field clears it.
+        /// </summary>
+        public static void SaveLocalServerConfig(string serverUrl, string modelName, string apiKey)
+        {
+            string configPath = GetConfigPath();
+
+            // One-time migration backup (same convention as SaveApiKeyForProvider)
+            if (File.Exists(configPath))
+            {
+                string bakPath = configPath + ".bak";
+                if (!File.Exists(bakPath))
+                {
+                    try { File.Copy(configPath, bakPath); } catch { /* non-fatal */ }
+                }
+            }
+
+            var obj = ReadConfigJson(configPath);
+
+            // local.server_url + local.model_name live under a "local" object.
+            if (obj["local"] == null) obj["local"] = new JObject();
+            var localObj = (JObject)obj["local"];
+            localObj["server_url"] = string.IsNullOrWhiteSpace(serverUrl) ? null : serverUrl.Trim();
+            localObj["model_name"] = string.IsNullOrWhiteSpace(modelName) ? null : modelName.Trim();
+
+            // local API key lives alongside other provider keys under api_keys.
+            if (obj["api_keys"] == null) obj["api_keys"] = new JObject();
+            var apiKeys = (JObject)obj["api_keys"];
+            apiKeys["local_api_key"] = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey.Trim();
+
+            // Default model on first-time setup
             if (string.IsNullOrEmpty(obj["claude_model"]?.ToString()))
                 obj["claude_model"] = DefaultModelId;
 

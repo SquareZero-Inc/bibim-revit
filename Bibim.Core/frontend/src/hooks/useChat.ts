@@ -39,6 +39,15 @@ export function useChat() {
   const [geminiConfigured, setGeminiConfigured] = useState(false);
   const [geminiMasked, setGeminiMasked] = useState('');
   const [geminiKeySaveResult, setGeminiKeySaveResult] = useState<'idle' | 'saved' | 'error'>('idle');
+  // Local self-hosted LLM (v1.1.x+)
+  const [localConfigured, setLocalConfigured] = useState(false);
+  const [localServerUrl, setLocalServerUrl] = useState('');
+  const [localModelName, setLocalModelName] = useState('');
+  const [localMasked, setLocalMasked] = useState('');
+  const [localSaveResult, setLocalSaveResult] = useState<'idle' | 'saved' | 'error'>('idle');
+  const [localConnectionStatus, setLocalConnectionStatus] = useState<
+    { state: 'idle' | 'testing' | 'success' | 'error'; modelCount?: number; error?: string; firstModel?: string }
+  >({ state: 'idle' });
   // Active model (id includes provider prefix, e.g. claude-*, gpt-*, gemini-*)
   const [claudeModel, setClaudeModel] = useState('claude-sonnet-4-6');
   // Aggregate "any active key configured" — kept under legacy name for back-compat with header chip.
@@ -279,6 +288,8 @@ export function useChat() {
         anthropic?: { configured?: boolean; maskedKey?: string };
         openai?:    { configured?: boolean; maskedKey?: string };
         gemini?:    { configured?: boolean; maskedKey?: string };
+        // v1.1.x+ local self-hosted
+        local?:     { configured?: boolean; serverUrl?: string; modelName?: string; maskedKey?: string };
         // Legacy fields kept for backward compat with older backends
         maskedKey?: string;
         claudeModel?: string;
@@ -298,6 +309,11 @@ export function useChat() {
       setOpenaiMasked(data?.openai?.maskedKey ?? '');
       setGeminiConfigured(data?.gemini?.configured ?? data?.geminiConfigured ?? false);
       setGeminiMasked(data?.gemini?.maskedKey ?? data?.geminiMaskedKey ?? '');
+      // Local self-hosted — gated by server URL, not key.
+      setLocalConfigured(data?.local?.configured ?? false);
+      setLocalServerUrl(data?.local?.serverUrl ?? '');
+      setLocalModelName(data?.local?.modelName ?? '');
+      setLocalMasked(data?.local?.maskedKey ?? '');
     });
 
     onBackendMessage('api_key_save_result', (payload) => {
@@ -308,11 +324,33 @@ export function useChat() {
         case 'anthropic': setAnthropicSaveResult(status); setTimeout(() => setAnthropicSaveResult('idle'), 3000); break;
         case 'openai':    setOpenaiSaveResult(status);    setTimeout(() => setOpenaiSaveResult('idle'), 3000);    break;
         case 'gemini':    setGeminiKeySaveResult(status); setTimeout(() => setGeminiKeySaveResult('idle'), 3000); break;
+        case 'local':     setLocalSaveResult(status);     setTimeout(() => setLocalSaveResult('idle'), 3000);     break;
         default:
           // Legacy backend: assume Anthropic (the only provider before v1.1.0)
           setAnthropicSaveResult(status);
           setTimeout(() => setAnthropicSaveResult('idle'), 3000);
           break;
+      }
+    });
+
+    onBackendMessage('local_connection_test_result', (payload) => {
+      const data = payload as {
+        success?: boolean;
+        modelCount?: number;
+        firstModel?: string;
+        error?: string;
+      };
+      if (data?.success) {
+        setLocalConnectionStatus({
+          state: 'success',
+          modelCount: data.modelCount ?? 0,
+          firstModel: data.firstModel ?? '',
+        });
+      } else {
+        setLocalConnectionStatus({
+          state: 'error',
+          error: data?.error ?? 'unknown error',
+        });
       }
     });
 
@@ -498,6 +536,21 @@ export function useChat() {
     sendToBackend('save_model', { modelId });
   }, []);
 
+  // Local self-hosted LLM — saves URL + model name + (optional) API key in one call.
+  const saveLocalLlmConfig = useCallback(
+    (serverUrl: string, modelName: string, apiKey: string) => {
+      sendToBackend('save_local_llm_config', { serverUrl, modelName, apiKey });
+    },
+    [],
+  );
+
+  // Triggers the backend's GET /v1/models probe. Result delivered via
+  // 'local_connection_test_result' message (see effect above).
+  const testLocalConnection = useCallback((serverUrl: string, apiKey: string) => {
+    setLocalConnectionStatus({ state: 'testing' });
+    sendToBackend('test_local_connection', { serverUrl, apiKey });
+  }, []);
+
   // Back-compat aliases (older parts of the UI may still call saveApiKey)
   const saveApiKey = saveAnthropicApiKey;
 
@@ -545,6 +598,15 @@ export function useChat() {
     geminiMasked,
     geminiKeySaveResult,
     saveGeminiApiKey,
+    // Local self-hosted (v1.1.x+)
+    localConfigured,
+    localServerUrl,
+    localModelName,
+    localMasked,
+    localSaveResult,
+    localConnectionStatus,
+    saveLocalLlmConfig,
+    testLocalConnection,
     claudeModel,
     saveModel,
     // Legacy aliases — older UI components may still consume these.

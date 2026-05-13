@@ -131,6 +131,14 @@ export default function App() {
               geminiMasked={chat.geminiMasked}
               onSaveGeminiKey={chat.saveGeminiApiKey}
               geminiSaveResult={chat.geminiKeySaveResult}
+              localConfigured={chat.localConfigured}
+              localServerUrl={chat.localServerUrl}
+              localModelName={chat.localModelName}
+              localMasked={chat.localMasked}
+              localSaveResult={chat.localSaveResult}
+              localConnectionStatus={chat.localConnectionStatus}
+              onSaveLocalLlmConfig={chat.saveLocalLlmConfig}
+              onTestLocalConnection={chat.testLocalConnection}
               activeModel={chat.claudeModel}
               onSaveModel={chat.saveModel}
               onOpenUrl={(url) => sendToBackend('open_url', { url })}

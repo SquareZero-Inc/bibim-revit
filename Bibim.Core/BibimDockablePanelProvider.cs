@@ -2468,6 +2468,94 @@ Constraints:
                     _bridge.PostMessage("model_save_result", new { success = false, error = ex.Message });
                 }
             });
+
+            // Save the self-hosted local LLM server config (URL + model name + optional API key).
+            // Empty serverUrl clears the config. Reset cached LLM service so subsequent calls
+            // pick up the new endpoint immediately.
+            RegisterSyncHandler("save_local_llm_config", payload =>
+            {
+                string serverUrl = payload["serverUrl"]?.ToString() ?? "";
+                string modelName = payload["modelName"]?.ToString() ?? "";
+                string apiKey    = payload["apiKey"]?.ToString() ?? "";
+                try
+                {
+                    ConfigService.SaveLocalServerConfig(serverUrl, modelName, apiKey);
+                    _llmService = null;
+                    _plannerLlmService = null;
+                    Logger.Log("BridgeHandler",
+                        $"Local LLM config saved — url={(string.IsNullOrEmpty(serverUrl) ? "(cleared)" : serverUrl)} model={(string.IsNullOrEmpty(modelName) ? "(none)" : modelName)} keyConfigured={!string.IsNullOrEmpty(apiKey)}");
+                    SendApiKeyStatus();
+                    _bridge.PostMessage("api_key_save_result", new { success = true, provider = "local" });
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log("BridgeHandler", $"save_local_llm_config failed: {ex.Message}");
+                    _bridge.PostMessage("api_key_save_result", new { success = false, provider = "local", error = ex.Message });
+                }
+            });
+
+            // Connection probe for the Local LLM section (red/blue indicator).
+            // Performs a GET /models against the supplied URL with optional bearer auth,
+            // returns parsed model count + sample model id, or the upstream error string.
+            RegisterAsyncHandler("test_local_connection", async payload =>
+            {
+                string serverUrl = payload["serverUrl"]?.ToString() ?? "";
+                string apiKey    = payload["apiKey"]?.ToString() ?? "";
+
+                if (string.IsNullOrWhiteSpace(serverUrl))
+                {
+                    _bridge.PostMessage("local_connection_test_result", new
+                    {
+                        success = false,
+                        error = "Server URL is empty."
+                    });
+                    return;
+                }
+
+                try
+                {
+                    // Construct a throwaway provider just for the /models call.
+                    // modelId is required by the ctor but unused on /models.
+                    var probe = new LocalProvider(
+                        apiKey: apiKey,
+                        modelId: "probe/dummy",
+                        httpClient: _downloadHttpClient,
+                        baseUrl: serverUrl,
+                        serverModelName: null);
+
+                    using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8)))
+                    {
+                        var modelsJson = await probe.ListModelsAsync(cts.Token);
+                        var data = modelsJson?["data"] as Newtonsoft.Json.Linq.JArray;
+                        int count = data?.Count ?? 0;
+                        string firstModel = count > 0 ? data[0]?["id"]?.ToString() : null;
+
+                        _bridge.PostMessage("local_connection_test_result", new
+                        {
+                            success = true,
+                            modelCount = count,
+                            firstModel = firstModel ?? ""
+                        });
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    _bridge.PostMessage("local_connection_test_result", new
+                    {
+                        success = false,
+                        error = "Connection timed out after 8 seconds."
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log("BridgeHandler", $"test_local_connection failed: {ex.Message}");
+                    _bridge.PostMessage("local_connection_test_result", new
+                    {
+                        success = false,
+                        error = ex.Message
+                    });
+                }
+            });
             RegisterSyncHandler("get_code_snippet", payload =>
             {
                 var snippet = _codeLibrary?.GetById(payload["id"]?.ToString());
@@ -2586,19 +2674,36 @@ Constraints:
                 string anthropicMasked = ConfigService.GetMaskedKeyForProvider("anthropic");
                 string openAiMasked    = ConfigService.GetMaskedKeyForProvider("openai");
                 string geminiMasked    = ConfigService.GetMaskedKeyForProvider("gemini");
+                string localMasked     = ConfigService.GetMaskedKeyForProvider("local");
                 string activeModel = ConfigService.GetRagConfig()?.ClaudeModel ?? ConfigService.DefaultModelId;
                 string activeProvider = ConfigService.GetActiveProviderName();
 
+                var cfg = ConfigService.GetRagConfig();
+                string localServerUrl = cfg?.LocalServerUrl ?? "";
+                string localModelName = cfg?.LocalModelName ?? "";
+                // Local "configured" is gated by server URL, NOT key (key is optional).
+                bool localConfigured = !string.IsNullOrWhiteSpace(localServerUrl);
+
+                // Aggregate active state — for local, key absence is allowed when URL is set.
+                bool activeConfigured = activeProvider == "local"
+                    ? localConfigured
+                    : !string.IsNullOrEmpty(ConfigService.GetActiveCredentials().ApiKey);
+
                 _bridge?.PostMessage("api_key_status", new
                 {
-                    // Aggregate active state — true if the *active provider* has a key.
-                    configured = !string.IsNullOrEmpty(ConfigService.GetActiveCredentials().ApiKey),
+                    configured = activeConfigured,
                     activeProvider,
                     activeModel,
                     // Per-provider status for the UI's gated model selector.
                     anthropic = new { configured = !string.IsNullOrEmpty(anthropicMasked), maskedKey = anthropicMasked },
                     openai    = new { configured = !string.IsNullOrEmpty(openAiMasked),    maskedKey = openAiMasked },
                     gemini    = new { configured = !string.IsNullOrEmpty(geminiMasked),    maskedKey = geminiMasked },
+                    local     = new {
+                        configured = localConfigured,
+                        serverUrl  = localServerUrl,
+                        modelName  = localModelName,
+                        maskedKey  = localMasked
+                    },
                     // Legacy fields kept so older frontend builds keep rendering.
                     maskedKey = anthropicMasked,
                     claudeModel = activeModel,
@@ -2780,13 +2885,27 @@ Constraints:
             if (_llmService != null) return _llmService;
 
             var (provider, apiKey, modelId) = ConfigService.GetActiveCredentials();
-            if (string.IsNullOrEmpty(apiKey))
-                throw new InvalidOperationException(
-                    $"API key for provider '{provider}' not configured. " +
-                    $"Open Settings and add the matching key for model '{modelId}'.");
-
             var compiler = new RoslynCompilerService();
-            _llmService = new LlmOrchestrationService(modelId, apiKey, compiler);
+
+            if (provider == "local")
+            {
+                // Local self-hosted: gating is server URL, not API key (key optional).
+                var cfg = ConfigService.GetRagConfig();
+                if (string.IsNullOrWhiteSpace(cfg?.LocalServerUrl))
+                    throw new InvalidOperationException(
+                        "Local LLM server URL not configured. " +
+                        $"Open Settings → Local LLM and enter your server URL for model '{modelId}'.");
+                _llmService = new LlmOrchestrationService(
+                    modelId, apiKey, compiler, cfg.LocalServerUrl, cfg.LocalModelName);
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(apiKey))
+                    throw new InvalidOperationException(
+                        $"API key for provider '{provider}' not configured. " +
+                        $"Open Settings and add the matching key for model '{modelId}'.");
+                _llmService = new LlmOrchestrationService(modelId, apiKey, compiler);
+            }
 
             // Wire streaming events to bridge
             _llmService.OnStreamingDelta += (delta) =>
@@ -2826,12 +2945,26 @@ Constraints:
             if (_plannerLlmService != null) return _plannerLlmService;
 
             var (provider, apiKey, modelId) = ConfigService.GetActiveCredentials();
-            if (string.IsNullOrEmpty(apiKey))
-                throw new InvalidOperationException(
-                    $"API key for provider '{provider}' not configured. " +
-                    $"Open Settings and add the matching key for model '{modelId}'.");
+            var compiler = new RoslynCompilerService();
 
-            _plannerLlmService = new LlmOrchestrationService(modelId, apiKey, new RoslynCompilerService());
+            if (provider == "local")
+            {
+                var cfg = ConfigService.GetRagConfig();
+                if (string.IsNullOrWhiteSpace(cfg?.LocalServerUrl))
+                    throw new InvalidOperationException(
+                        "Local LLM server URL not configured. " +
+                        $"Open Settings → Local LLM and enter your server URL for model '{modelId}'.");
+                _plannerLlmService = new LlmOrchestrationService(
+                    modelId, apiKey, compiler, cfg.LocalServerUrl, cfg.LocalModelName);
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(apiKey))
+                    throw new InvalidOperationException(
+                        $"API key for provider '{provider}' not configured. " +
+                        $"Open Settings and add the matching key for model '{modelId}'.");
+                _plannerLlmService = new LlmOrchestrationService(modelId, apiKey, compiler);
+            }
             _plannerLlmService.OnTokenUsage += (info) =>
             {
                 TokenTracker.Track("task_planner", _plannerLlmService.ProviderName, info.Model,

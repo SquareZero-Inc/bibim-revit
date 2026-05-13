@@ -4,14 +4,32 @@ import { t } from '../i18n';
 const FEEDBACK_URL_BUG = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
 const FEEDBACK_URL_FEATURE = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
 
-type Provider = 'anthropic' | 'openai' | 'gemini';
+type Provider = 'anthropic' | 'openai' | 'gemini' | 'local';
 type SaveResult = 'idle' | 'saved' | 'error';
 
-// Model catalogue exposed in v1.1.0. Order = display order.
+// Model catalogue exposed in v1.1.x. Order = display order.
 // Labels/notes localised via t() at render time.
 // `speed` is observed responsiveness on typical Revit codegen tasks (Apr 2026):
 //   '⚡⚡⚡' fast | '⚡⚡' medium | '⚡' slow
 type SpeedRating = '⚡⚡⚡' | '⚡⚡' | '⚡';
+
+type ModelNoteKey =
+  | 'modelNoteSonnet'
+  | 'modelNoteOpus47'
+  | 'modelNoteGpt55'
+  | 'modelNoteGemini31Pro'
+  | 'modelNoteGemma4Local'
+  | 'modelNoteLlama33Local'
+  | 'modelNoteCodestralLocal';
+
+// Default server-side model name to pre-fill when the user picks an OSS reference
+// from the dropdown. Most local servers (Ollama / LM Studio) accept the model
+// name without the vendor prefix.
+const DEFAULT_LOCAL_MODEL_NAMES: Record<string, string> = {
+  'google/gemma-4-26b-a4b-it': 'gemma-4-26b-a4b-it',
+  'meta-llama/llama-3.3-70b-instruct': 'llama-3.3-70b-instruct',
+  'mistralai/codestral-2508': 'codestral-2508',
+};
 
 const MODELS: ReadonlyArray<{
   id: string;
@@ -19,7 +37,7 @@ const MODELS: ReadonlyArray<{
   cost: string;
   speed: SpeedRating;
   speedKey: 'modelSpeedFast' | 'modelSpeedMedium' | 'modelSpeedSlow';
-  noteKey: 'modelNoteSonnet' | 'modelNoteOpus47' | 'modelNoteGpt55' | 'modelNoteGemini31Pro';
+  noteKey: ModelNoteKey;
   provider: Provider;
   recommended?: boolean;
 }> = [
@@ -27,7 +45,23 @@ const MODELS: ReadonlyArray<{
   { id: 'claude-opus-4-7',       label: 'Claude Opus 4.7',   cost: '~$0.20', speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteOpus47',       provider: 'anthropic' },
   { id: 'gpt-5.5',                label: 'GPT-5.5',           cost: '~$0.08', speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteGpt55',        provider: 'openai' },
   { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro',    cost: '~$0.03', speed: '⚡',    speedKey: 'modelSpeedSlow',   noteKey: 'modelNoteGemini31Pro',  provider: 'gemini' },
+  // Local self-hosted (BIBIM-validated against the OpenRouter sweep, 2026-05-10).
+  // For local models, the "cost" column shows estimated VRAM at 4-bit quantization
+  // — there's no per-call dollar cost, but hardware is the real constraint.
+  { id: 'google/gemma-4-26b-a4b-it',         label: 'Gemma 4 26B A4B IT',      cost: '~16GB VRAM', speed: '⚡',   speedKey: 'modelSpeedSlow',   noteKey: 'modelNoteGemma4Local',     provider: 'local' },
+  { id: 'meta-llama/llama-3.3-70b-instruct', label: 'Llama 3.3 70B Instruct',  cost: '~40GB VRAM', speed: '⚡⚡', speedKey: 'modelSpeedMedium', noteKey: 'modelNoteLlama33Local',    provider: 'local' },
+  { id: 'mistralai/codestral-2508',          label: 'Codestral 2508',          cost: '~14GB VRAM', speed: '⚡⚡⚡',speedKey: 'modelSpeedFast',   noteKey: 'modelNoteCodestralLocal',  provider: 'local' },
 ];
+
+// Reference dropdown options (the curated OSS subset, used inside the Local section)
+const LOCAL_REFERENCE_OPTIONS = MODELS.filter(m => m.provider === 'local');
+
+type LocalConnectionStatus = {
+  state: 'idle' | 'testing' | 'success' | 'error';
+  modelCount?: number;
+  firstModel?: string;
+  error?: string;
+};
 
 interface Props {
   // Anthropic
@@ -45,6 +79,15 @@ interface Props {
   geminiMasked: string;
   onSaveGeminiKey: (key: string) => void;
   geminiSaveResult: SaveResult;
+  // Local self-hosted LLM (v1.1.x+)
+  localConfigured: boolean;
+  localServerUrl: string;
+  localModelName: string;
+  localMasked: string;
+  localSaveResult: SaveResult;
+  localConnectionStatus: LocalConnectionStatus;
+  onSaveLocalLlmConfig: (serverUrl: string, modelName: string, apiKey: string) => void;
+  onTestLocalConnection: (serverUrl: string, apiKey: string) => void;
   // Active model
   activeModel: string;
   onSaveModel: (modelId: string) => void;
@@ -57,6 +100,8 @@ export default function SettingsPanel(props: Props) {
     anthropicConfigured, anthropicMasked, onSaveAnthropicKey, anthropicSaveResult,
     openaiConfigured, openaiMasked, onSaveOpenAiKey, openaiSaveResult,
     geminiConfigured, geminiMasked, onSaveGeminiKey, geminiSaveResult,
+    localConfigured, localServerUrl, localModelName, localMasked, localSaveResult,
+    localConnectionStatus, onSaveLocalLlmConfig, onTestLocalConnection,
     activeModel, onSaveModel, onOpenUrl,
   } = props;
 
@@ -75,7 +120,9 @@ export default function SettingsPanel(props: Props) {
 
   // The header gear icon turns green only if the *active* model has its key configured.
   const activeProvider = MODELS.find(m => m.id === activeModel)?.provider ?? 'anthropic';
-  const activeReady = isProviderReady(activeProvider, anthropicConfigured, openaiConfigured, geminiConfigured);
+  const activeReady = isProviderReady(
+    activeProvider, anthropicConfigured, openaiConfigured, geminiConfigured, localConfigured,
+  );
 
   return (
     <div ref={panelRef} style={{ position: 'relative' }}>
@@ -135,12 +182,16 @@ export default function SettingsPanel(props: Props) {
             <HelpText>{t('claudeModelHelp')}</HelpText>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
               {MODELS.map(m => {
-                const enabled = isProviderReady(m.provider, anthropicConfigured, openaiConfigured, geminiConfigured);
+                const enabled = isProviderReady(
+                  m.provider, anthropicConfigured, openaiConfigured, geminiConfigured, localConfigured,
+                );
+                // Local-provider models don't have a per-call dollar cost — suppress unit.
+                const costLabel = m.provider === 'local' ? m.cost : `${m.cost} ${t('modelCostUnit')}`;
                 return (
                   <ModelOption
                     key={m.id}
                     label={m.label}
-                    cost={`${m.cost} ${t('modelCostUnit')}`}
+                    cost={costLabel}
                     note={t(m.noteKey)}
                     speed={m.speed}
                     speedTooltip={t(m.speedKey)}
@@ -150,7 +201,8 @@ export default function SettingsPanel(props: Props) {
                     lockTooltip={
                       m.provider === 'anthropic' ? t('modelLockedTooltipAnthropic') :
                       m.provider === 'openai'    ? t('modelLockedTooltipOpenAI') :
-                                                   t('modelLockedTooltipGemini')
+                      m.provider === 'gemini'    ? t('modelLockedTooltipGemini') :
+                                                   t('modelLockedTooltipLocal')
                     }
                     lockBadge={t('modelLocked')}
                     onSelect={() => enabled && onSaveModel(m.id)}
@@ -201,6 +253,20 @@ export default function SettingsPanel(props: Props) {
 
           <Divider />
 
+          {/* ── Section: Local Self-hosted LLM (v1.1.x+) ── */}
+          <LocalLlmSection
+            configured={localConfigured}
+            initialServerUrl={localServerUrl}
+            initialModelName={localModelName}
+            maskedKey={localMasked}
+            saveResult={localSaveResult}
+            connectionStatus={localConnectionStatus}
+            onSave={onSaveLocalLlmConfig}
+            onTest={onTestLocalConnection}
+          />
+
+          <Divider />
+
           {/* ── Section: Feedback ── */}
           <Section title={t('feedbackSectionTitle')}>
             <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
@@ -219,8 +285,19 @@ export default function SettingsPanel(props: Props) {
   );
 }
 
-function isProviderReady(p: Provider, anth: boolean, oai: boolean, gem: boolean): boolean {
-  return p === 'anthropic' ? anth : p === 'openai' ? oai : gem;
+function isProviderReady(
+  p: Provider,
+  anth: boolean,
+  oai: boolean,
+  gem: boolean,
+  local: boolean,
+): boolean {
+  switch (p) {
+    case 'anthropic': return anth;
+    case 'openai':    return oai;
+    case 'gemini':    return gem;
+    case 'local':     return local;
+  }
 }
 
 // ── Sub-components ──────────────────────────────────────────────
@@ -274,6 +351,214 @@ function ProviderKeySection({
     </Section>
   );
 }
+
+function LocalLlmSection({
+  configured, initialServerUrl, initialModelName, maskedKey, saveResult,
+  connectionStatus, onSave, onTest,
+}: {
+  configured: boolean;
+  initialServerUrl: string;
+  initialModelName: string;
+  maskedKey: string;
+  saveResult: SaveResult;
+  connectionStatus: LocalConnectionStatus;
+  onSave: (serverUrl: string, modelName: string, apiKey: string) => void;
+  onTest: (serverUrl: string, apiKey: string) => void;
+}) {
+  const [serverUrl, setServerUrl] = useState(initialServerUrl);
+  const [modelName, setModelName] = useState(initialModelName);
+  const [apiKey, setApiKey] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  const [referenceId, setReferenceId] = useState(
+    LOCAL_REFERENCE_OPTIONS.find(m => DEFAULT_LOCAL_MODEL_NAMES[m.id] === initialModelName)?.id
+    ?? LOCAL_REFERENCE_OPTIONS[0]?.id
+    ?? '',
+  );
+
+  // Reflect external prop changes (e.g. config reload) into local state
+  useEffect(() => { setServerUrl(initialServerUrl); }, [initialServerUrl]);
+  useEffect(() => { setModelName(initialModelName); }, [initialModelName]);
+
+  const handleReferenceChange = (id: string) => {
+    setReferenceId(id);
+    const suggested = DEFAULT_LOCAL_MODEL_NAMES[id];
+    if (suggested) setModelName(suggested);
+  };
+
+  const handleSave = () => {
+    const u = serverUrl.trim();
+    if (!u) return;
+    onSave(u, modelName.trim(), apiKey.trim());
+    setApiKey('');
+    setShowKey(false);
+  };
+
+  const handleTest = () => {
+    const u = serverUrl.trim();
+    if (!u) return;
+    onTest(u, apiKey.trim());
+  };
+
+  // Status dot colour: green if last test succeeded OR (no test run yet AND configured),
+  // red if last test failed, yellow if neither configured nor tested.
+  const dotColor = (() => {
+    if (connectionStatus.state === 'success') return 'var(--color-accent)';
+    if (connectionStatus.state === 'error')   return 'var(--color-error, #ef4444)';
+    if (connectionStatus.state === 'testing') return 'var(--color-text-muted)';
+    return configured ? 'var(--color-accent)' : 'var(--color-warning, #f59e0b)';
+  })();
+
+  const statusLabel = (() => {
+    if (connectionStatus.state === 'testing') return t('localTesting');
+    if (connectionStatus.state === 'success')
+      return t('localTestSuccess').replace('{count}', String(connectionStatus.modelCount ?? 0));
+    if (connectionStatus.state === 'error')
+      return `${t('localTestFailure')}: ${connectionStatus.error ?? ''}`;
+    return configured ? t('localConfigured') : t('localNotConfigured');
+  })();
+
+  return (
+    <Section title={t('localSection')}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-xs)' }}>
+        <span style={{
+          width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: dotColor,
+        }} />
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>
+          {statusLabel}
+        </span>
+      </div>
+
+      {/* Server URL */}
+      <LabeledRow label={t('localServerUrlLabel')}>
+        <input
+          type="text"
+          value={serverUrl}
+          onChange={(e) => setServerUrl(e.target.value)}
+          placeholder={t('localServerUrlPlaceholder')}
+          style={textInputStyle}
+        />
+      </LabeledRow>
+
+      {/* Reference dropdown */}
+      <LabeledRow label={t('localReferenceLabel')}>
+        <select
+          value={referenceId}
+          onChange={(e) => handleReferenceChange(e.target.value)}
+          style={{ ...textInputStyle, fontFamily: 'inherit' }}
+        >
+          {LOCAL_REFERENCE_OPTIONS.map(m => (
+            <option key={m.id} value={m.id}>{m.label}</option>
+          ))}
+        </select>
+      </LabeledRow>
+
+      {/* Model name (what gets sent in the request body) */}
+      <LabeledRow label={t('localModelNameLabel')}>
+        <input
+          type="text"
+          value={modelName}
+          onChange={(e) => setModelName(e.target.value)}
+          placeholder={t('localModelNamePlaceholder')}
+          style={textInputStyle}
+        />
+      </LabeledRow>
+
+      {/* API key (optional, with help tooltip) */}
+      <LabeledRow
+        label={
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            {t('localApiKeyLabel')}
+            <span
+              title={t('localApiKeyTooltip')}
+              style={{
+                cursor: 'help',
+                width: 14, height: 14, borderRadius: '50%',
+                background: 'var(--color-bg-tertiary)',
+                border: '1px solid var(--color-border)',
+                color: 'var(--color-text-muted)',
+                fontSize: 9, fontWeight: 700,
+                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >?</span>
+          </span>
+        }
+      >
+        <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
+          <input
+            type={showKey ? 'text' : 'password'}
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            placeholder={maskedKey ? maskedKey : t('localApiKeyPlaceholder')}
+            style={{ ...textInputStyle, fontFamily: 'monospace' }}
+          />
+          <button onClick={() => setShowKey(s => !s)} style={smallButtonStyle}>
+            {showKey ? t('apiKeyHideKey') : t('apiKeyShowKey')}
+          </button>
+        </div>
+      </LabeledRow>
+
+      {/* Action row: Save + Test connection */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)', flexWrap: 'wrap' }}>
+        <button
+          onClick={handleSave}
+          disabled={!serverUrl.trim()}
+          style={{
+            ...saveButtonStyle,
+            opacity: serverUrl.trim() ? 1 : 0.5,
+            cursor: serverUrl.trim() ? 'pointer' : 'default',
+          }}
+        >
+          {t('apiKeySave')}
+        </button>
+        <button
+          onClick={handleTest}
+          disabled={!serverUrl.trim() || connectionStatus.state === 'testing'}
+          style={{
+            ...smallButtonStyle,
+            opacity: serverUrl.trim() && connectionStatus.state !== 'testing' ? 1 : 0.5,
+          }}
+        >
+          {connectionStatus.state === 'testing' ? t('localTesting') : t('localTestConnection')}
+        </button>
+        {saveResult === 'saved' && (
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-accent)' }}>
+            ✓ {t('apiKeySaved')}
+          </span>
+        )}
+        {saveResult === 'error' && (
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-error, #ef4444)' }}>
+            {t('apiKeySaveError')}
+          </span>
+        )}
+      </div>
+
+      <HelpText>{t('localWarnTools')}</HelpText>
+      <HelpText>{t('localHelp')}</HelpText>
+    </Section>
+  );
+}
+
+function LabeledRow({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <span style={{ fontSize: 10, color: 'var(--color-text-muted)', fontWeight: 500 }}>{label}</span>
+      {children}
+    </div>
+  );
+}
+
+const textInputStyle: React.CSSProperties = {
+  flex: 1,
+  width: '100%',
+  padding: '5px 8px',
+  background: 'var(--color-bg-tertiary)',
+  border: '1px solid var(--color-border)',
+  borderRadius: 'var(--radius-md)',
+  color: 'var(--color-text-primary)',
+  fontSize: 'var(--text-xs)',
+  outline: 'none',
+  boxSizing: 'border-box',
+};
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -375,7 +660,7 @@ function ModelOption({
   label: string;
   cost: string;
   note: string;
-  speed: '⚡⚡⚡' | '⚡⚡' | '⚡';
+  speed: SpeedRating;
   speedTooltip: string;
   recommended?: boolean;
   selected: boolean;
