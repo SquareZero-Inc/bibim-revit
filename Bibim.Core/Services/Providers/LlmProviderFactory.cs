@@ -11,8 +11,9 @@ namespace Bibim.Core
     ///   anthropic → claude-sonnet-4-6, claude-opus-4-7
     ///   openai    → gpt-5.5
     ///   gemini    → gemini-3.1-pro-preview
-    ///   local     → google/gemma-4-26b-a4b-it, meta-llama/llama-3.3-70b-instruct,
-    ///               mistralai/codestral-2508
+    ///   local     → "local" (single canonical id). Actual server-side model name
+    ///                is resolved by LocalProvider at runtime from
+    ///                ConfigService.LocalModelName OR a lazy /v1/models probe.
     ///
     /// "local" maps to a self-hosted OpenAI-compatible Chat Completions server
     /// (Ollama / LM Studio / vLLM / llama.cpp). Caller supplies the server URL
@@ -32,9 +33,17 @@ namespace Bibim.Core
             if (m.StartsWith("gpt-") || m.StartsWith("o3") || m.StartsWith("o4")) return "openai";
             if (m.StartsWith("gemini-"))                  return "gemini";
 
-            // Local / open-source models — match by vendor prefix (OpenRouter convention).
-            // Anything containing a "/" with these vendor prefixes is treated as a
-            // self-hosted model that targets an OpenAI-compatible Chat Completions endpoint.
+            // v1.1.x+ canonical local id — single entry in the main model picker.
+            // The actual server-side model is resolved by LocalProvider at runtime
+            // (config override OR /v1/models auto-discovery).
+            if (m == "local")                             return "local";
+
+            // Back-compat — older configs stored vendor-prefixed OpenRouter ids
+            // (google/gemma-..., meta-llama/..., mistralai/..., qwen/..., nvidia/...,
+            // kwaipilot/...) directly as claude_model. ConfigService migrates these
+            // to "local" on next launch with a .bak backup, but the routing still
+            // recognises them so a non-migrated file (env-var override, manual
+            // edit, restored from backup) keeps working.
             if (m.StartsWith("google/gemma-") ||
                 m.StartsWith("meta-llama/") ||
                 m.StartsWith("mistralai/") ||

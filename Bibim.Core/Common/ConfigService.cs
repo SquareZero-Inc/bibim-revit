@@ -59,14 +59,11 @@ namespace Bibim.Core
             // Vanilla 3.1 Pro — the customtools variant silently misbehaves
             // on JSON-only output without registered tools (planner case).
             ("gemini-3.1-pro-preview",      "Gemini 3.1 Pro",     "gemini"),
-            // Local self-hosted OSS models. IDs follow OpenRouter convention so the
-            // existing model selector / debug logging remains uniform. Each id below
-            // was validated end-to-end via OpenRouter against the Revit 2024 BIBIM
-            // smoke matrix (see seeewd/bibim-revit benchmarks). Gemma 4 26B was the
-            // strongest non-Claude candidate (14/15 runtime success).
-            ("google/gemma-4-26b-a4b-it",            "Gemma 4 26B A4B IT (Local)",          "local"),
-            ("meta-llama/llama-3.3-70b-instruct",    "Llama 3.3 70B Instruct (Local)",      "local"),
-            ("mistralai/codestral-2508",             "Codestral 2508 (Local)",              "local"),
+            // Self-hosted local LLM — single entry in the model picker. The actual
+            // server-side model is resolved at runtime from LocalModelName override
+            // OR a /v1/models auto-discovery probe in LocalProvider. The frontend
+            // shows the active model name in the option's note field.
+            ("local",                       "Local LLM (Self-hosted)", "local"),
         };
 
         /// <summary>
@@ -82,6 +79,23 @@ namespace Bibim.Core
                 _cachedConfig = LoadRagConfig();
                 return _cachedConfig;
             }
+        }
+
+        /// <summary>
+        /// Returns true if the model id is a legacy OSS vendor-prefixed id that
+        /// existed in v1.1.x prior to the single-"local" picker collapse. Used
+        /// during config load to trigger one-shot migration to "local".
+        /// </summary>
+        private static bool IsLegacyLocalVendorId(string modelId)
+        {
+            if (string.IsNullOrEmpty(modelId)) return false;
+            string m = modelId.Trim().ToLowerInvariant();
+            return m.StartsWith("google/gemma-")
+                || m.StartsWith("meta-llama/")
+                || m.StartsWith("mistralai/")
+                || m.StartsWith("qwen/")
+                || m.StartsWith("nvidia/")
+                || m.StartsWith("kwaipilot/");
         }
 
         public static void ClearCache()
@@ -315,6 +329,51 @@ namespace Bibim.Core
                         File.WriteAllText(configPath, obj.ToString(Newtonsoft.Json.Formatting.Indented));
                         Logger.Log("ConfigService",
                             "Migrated saved model id 'gemini-3.1-pro-preview-customtools' → 'gemini-3.1-pro-preview' (rewrote rag_config.json).");
+                    }
+                    catch (Exception migEx)
+                    {
+                        Logger.Log("ConfigService",
+                            $"In-memory migration applied; disk rewrite skipped: {migEx.Message}");
+                    }
+                }
+
+                // Migration (v1.1.x+): older builds stored OSS vendor-prefixed
+                // OpenRouter ids (google/gemma-..., meta-llama/..., mistralai/...,
+                // qwen/..., nvidia/..., kwaipilot/...) directly as claude_model
+                // when the model picker had three separate "Local" rows. The picker
+                // is now collapsed to a single "local" entry — server-side model
+                // name lives under local.model_name. Coerce the old id to "local"
+                // and stash the model fragment as the override if no override is
+                // already set, so behaviour is preserved across the upgrade.
+                if (!string.IsNullOrEmpty(claudeModel) && IsLegacyLocalVendorId(claudeModel))
+                {
+                    string priorOssId = claudeModel;
+                    claudeModel = "local";
+                    try
+                    {
+                        obj["claude_model"] = claudeModel;
+
+                        // Preserve the model name fragment as local.model_name if the
+                        // user hadn't already typed an explicit override. Strip the
+                        // vendor prefix (matching LocalProvider.StripVendorPrefix).
+                        int slash = priorOssId.IndexOf('/');
+                        string fragment = slash >= 0 && slash < priorOssId.Length - 1
+                            ? priorOssId.Substring(slash + 1)
+                            : priorOssId;
+
+                        if (obj["local"] == null) obj["local"] = new JObject();
+                        var localMigrationObj = (JObject)obj["local"];
+                        if (string.IsNullOrWhiteSpace(localMigrationObj["model_name"]?.ToString()))
+                            localMigrationObj["model_name"] = fragment;
+
+                        string bakPath = configPath + ".bak";
+                        if (!File.Exists(bakPath))
+                        {
+                            try { File.Copy(configPath, bakPath); } catch { /* non-fatal */ }
+                        }
+                        File.WriteAllText(configPath, obj.ToString(Newtonsoft.Json.Formatting.Indented));
+                        Logger.Log("ConfigService",
+                            $"Migrated saved model id '{priorOssId}' → 'local' (local.model_name = '{fragment}', rewrote rag_config.json).");
                     }
                     catch (Exception migEx)
                     {

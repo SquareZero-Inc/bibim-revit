@@ -86,6 +86,7 @@ namespace Bibim.Core
                 return _serverModelName;
 
             string resolved = null;
+            string discoveryError = null;
             try
             {
                 var modelsJson = await ListModelsAsync(ct);
@@ -95,13 +96,37 @@ namespace Bibim.Core
             }
             catch (Exception ex)
             {
+                discoveryError = ex.Message;
                 Logger.Log("LocalProvider",
-                    $"Auto-discovery /v1/models failed; falling back to stripped canonical id: {ex.Message}");
+                    $"Auto-discovery /v1/models failed: {ex.Message}");
             }
 
-            _serverModelName = !string.IsNullOrWhiteSpace(resolved)
-                ? resolved
-                : StripVendorPrefix(_modelId);
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                _serverModelName = resolved;
+                _serverModelNameResolved = true;
+                return _serverModelName;
+            }
+
+            // Fallback path — no model name from server, none from caller. Try
+            // stripping the vendor prefix from _modelId for back-compat with
+            // legacy OSS ids (e.g. "google/gemma-4-26b-a4b-it" → "gemma-4-26b-a4b-it").
+            // But the v1.1.x+ canonical id is just "local" — that's a routing
+            // token, not a real model name. Sending model="local" to a chat
+            // endpoint would fail with a confusing 404. Throw a clear actionable
+            // error instead.
+            string stripped = StripVendorPrefix(_modelId);
+            if (string.Equals(stripped, "local", StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Could not determine which model to send to {_baseUrl}. " +
+                    (string.IsNullOrEmpty(discoveryError)
+                        ? "The server returned no models from /v1/models."
+                        : $"/v1/models probe failed: {discoveryError}.") +
+                    " Open Settings → Local LLM → Advanced and fill in a model name override.");
+            }
+
+            _serverModelName = stripped;
             _serverModelNameResolved = true;
             return _serverModelName;
         }
