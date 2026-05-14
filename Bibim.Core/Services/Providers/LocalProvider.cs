@@ -29,7 +29,8 @@ namespace Bibim.Core
     {
         private readonly string _apiKey;             // optional — empty for unauthenticated localhost
         private readonly string _modelId;            // canonical id (used for routing/logs)
-        private readonly string _serverModelName;    // what we actually send in the "model" field
+        private string _serverModelName;             // what we actually send in the "model" field
+        private bool _serverModelNameResolved;       // false until lazy resolution succeeds
         private readonly HttpClient _httpClient;
         private readonly string _baseUrl;            // e.g. http://localhost:11434/v1
 
@@ -53,12 +54,56 @@ namespace Bibim.Core
             _baseUrl = baseUrl.TrimEnd('/');
             _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
 
-            // If caller didn't override, default to canonical id minus vendor prefix
-            // (Ollama / LM Studio usually accept "gemma-4-26b-a4b-it" — not the
-            // "google/gemma-4-26b-a4b-it" OpenRouter form).
-            _serverModelName = !string.IsNullOrWhiteSpace(serverModelName)
-                ? serverModelName
-                : StripVendorPrefix(modelId);
+            // Two paths for the server-side model name:
+            //   (1) Caller passed an explicit name → use it as-is, no discovery.
+            //   (2) Caller passed null/empty → defer resolution to the first request,
+            //       where we'll call /v1/models and pick the first available id.
+            //       This is the zero-friction path — user only configures the URL
+            //       and we figure out the model from the server's own catalogue.
+            if (!string.IsNullOrWhiteSpace(serverModelName))
+            {
+                _serverModelName = serverModelName;
+                _serverModelNameResolved = true;
+            }
+            else
+            {
+                _serverModelName = null;
+                _serverModelNameResolved = false;
+            }
+        }
+
+        /// <summary>
+        /// Resolve the model name to send in the "model" field. If the caller
+        /// supplied one at construction time we return it immediately. Otherwise
+        /// we call /v1/models on first use and cache the first available id.
+        /// Fails open by stripping the vendor prefix from <see cref="_modelId"/>
+        /// when /v1/models is unreachable — last-resort heuristic so the request
+        /// at least attempts to go out.
+        /// </summary>
+        private async Task<string> ResolveServerModelNameAsync(CancellationToken ct)
+        {
+            if (_serverModelNameResolved && !string.IsNullOrEmpty(_serverModelName))
+                return _serverModelName;
+
+            string resolved = null;
+            try
+            {
+                var modelsJson = await ListModelsAsync(ct);
+                var data = modelsJson?["data"] as JArray;
+                if (data != null && data.Count > 0)
+                    resolved = data[0]?["id"]?.ToString();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("LocalProvider",
+                    $"Auto-discovery /v1/models failed; falling back to stripped canonical id: {ex.Message}");
+            }
+
+            _serverModelName = !string.IsNullOrWhiteSpace(resolved)
+                ? resolved
+                : StripVendorPrefix(_modelId);
+            _serverModelNameResolved = true;
+            return _serverModelName;
         }
 
         // ────────────────────────────── public API ──────────────────────────────
@@ -72,10 +117,11 @@ namespace Bibim.Core
             bool jsonMode = false)
         {
             var chatMessages = TranslateMessagesToChatCompletions(messages, systemPrompt);
+            string modelToSend = await ResolveServerModelNameAsync(ct);
 
             var requestBody = new JObject
             {
-                ["model"] = _serverModelName,
+                ["model"] = modelToSend,
                 ["messages"] = chatMessages,
                 ["max_tokens"] = maxTokens,
                 ["stream"] = false
@@ -119,10 +165,11 @@ namespace Bibim.Core
             int maxTokens)
         {
             var chatMessages = TranslateMessagesToChatCompletions(messages, systemPrompt);
+            string modelToSend = await ResolveServerModelNameAsync(ct);
 
             var requestBody = new JObject
             {
-                ["model"] = _serverModelName,
+                ["model"] = modelToSend,
                 ["messages"] = chatMessages,
                 ["max_tokens"] = maxTokens,
                 ["stream"] = true,

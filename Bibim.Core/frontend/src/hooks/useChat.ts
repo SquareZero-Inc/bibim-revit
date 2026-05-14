@@ -46,7 +46,16 @@ export function useChat() {
   const [localMasked, setLocalMasked] = useState('');
   const [localSaveResult, setLocalSaveResult] = useState<'idle' | 'saved' | 'error'>('idle');
   const [localConnectionStatus, setLocalConnectionStatus] = useState<
-    { state: 'idle' | 'testing' | 'success' | 'error'; modelCount?: number; error?: string; firstModel?: string }
+    {
+      state: 'idle' | 'testing' | 'success' | 'error';
+      modelCount?: number;
+      error?: string;
+      firstModel?: string;
+      /** Full list of model ids advertised by the server (capped at 50). Used
+       *  by the UI to populate the model picker so the user doesn't need to
+       *  type the exact server-side name. */
+      models?: string[];
+    }
   >({ state: 'idle' });
   // Active model (id includes provider prefix, e.g. claude-*, gpt-*, gemini-*)
   const [claudeModel, setClaudeModel] = useState('claude-sonnet-4-6');
@@ -338,6 +347,7 @@ export function useChat() {
         success?: boolean;
         modelCount?: number;
         firstModel?: string;
+        models?: string[];   // v1.1.x+ — full id list for the picker
         error?: string;
       };
       if (data?.success) {
@@ -345,6 +355,7 @@ export function useChat() {
           state: 'success',
           modelCount: data.modelCount ?? 0,
           firstModel: data.firstModel ?? '',
+          models: Array.isArray(data.models) ? data.models : (data.firstModel ? [data.firstModel] : []),
         });
       } else {
         setLocalConnectionStatus({

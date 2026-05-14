@@ -2528,13 +2528,29 @@ Constraints:
                         var modelsJson = await probe.ListModelsAsync(cts.Token);
                         var data = modelsJson?["data"] as Newtonsoft.Json.Linq.JArray;
                         int count = data?.Count ?? 0;
-                        string firstModel = count > 0 ? data[0]?["id"]?.ToString() : null;
+
+                        // Return the full id list (capped at 50 entries to bound the
+                        // payload — most local servers expose 1-10 models, but some
+                        // proxies in front of model hubs expose hundreds). The frontend
+                        // uses this list to auto-populate the model selector so the
+                        // user doesn't have to know the exact server-side model name.
+                        var modelIds = new List<string>();
+                        if (data != null)
+                        {
+                            foreach (var entry in data)
+                            {
+                                if (modelIds.Count >= 50) break;
+                                string id = entry?["id"]?.ToString();
+                                if (!string.IsNullOrWhiteSpace(id)) modelIds.Add(id);
+                            }
+                        }
 
                         _bridge.PostMessage("local_connection_test_result", new
                         {
                             success = true,
                             modelCount = count,
-                            firstModel = firstModel ?? ""
+                            firstModel = modelIds.Count > 0 ? modelIds[0] : "",
+                            models = modelIds   // NEW: full list for the auto-populate dropdown
                         });
                     }
                 }

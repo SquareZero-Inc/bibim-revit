@@ -22,15 +22,6 @@ type ModelNoteKey =
   | 'modelNoteLlama33Local'
   | 'modelNoteCodestralLocal';
 
-// Default server-side model name to pre-fill when the user picks an OSS reference
-// from the dropdown. Most local servers (Ollama / LM Studio) accept the model
-// name without the vendor prefix.
-const DEFAULT_LOCAL_MODEL_NAMES: Record<string, string> = {
-  'google/gemma-4-26b-a4b-it': 'gemma-4-26b-a4b-it',
-  'meta-llama/llama-3.3-70b-instruct': 'llama-3.3-70b-instruct',
-  'mistralai/codestral-2508': 'codestral-2508',
-};
-
 const MODELS: ReadonlyArray<{
   id: string;
   label: string;
@@ -53,13 +44,14 @@ const MODELS: ReadonlyArray<{
   { id: 'mistralai/codestral-2508',          label: 'Codestral 2508',          cost: '~14GB VRAM', speed: '⚡⚡⚡',speedKey: 'modelSpeedFast',   noteKey: 'modelNoteCodestralLocal',  provider: 'local' },
 ];
 
-// Reference dropdown options (the curated OSS subset, used inside the Local section)
-const LOCAL_REFERENCE_OPTIONS = MODELS.filter(m => m.provider === 'local');
-
 type LocalConnectionStatus = {
   state: 'idle' | 'testing' | 'success' | 'error';
   modelCount?: number;
   firstModel?: string;
+  /** Full list of model ids advertised by the server's /v1/models response.
+   *  Used to populate the auto-discovered model picker so the user can pick
+   *  with one click instead of typing the exact server-side name. */
+  models?: string[];
   error?: string;
 };
 
@@ -366,37 +358,34 @@ function LocalLlmSection({
   onTest: (serverUrl: string, apiKey: string) => void;
 }) {
   const [serverUrl, setServerUrl] = useState(initialServerUrl);
-  const [modelName, setModelName] = useState(initialModelName);
+  const [modelOverride, setModelOverride] = useState(initialModelName);
   const [apiKey, setApiKey] = useState('');
   const [showKey, setShowKey] = useState(false);
-  const [referenceId, setReferenceId] = useState(
-    LOCAL_REFERENCE_OPTIONS.find(m => DEFAULT_LOCAL_MODEL_NAMES[m.id] === initialModelName)?.id
-    ?? LOCAL_REFERENCE_OPTIONS[0]?.id
-    ?? '',
-  );
+  // Auto-expand Advanced section if any advanced field already has a saved value
+  // (API key configured or manual model name override). New users see it collapsed.
+  const [advancedOpen, setAdvancedOpen] = useState(Boolean(maskedKey) || Boolean(initialModelName));
 
   // Reflect external prop changes (e.g. config reload) into local state
   useEffect(() => { setServerUrl(initialServerUrl); }, [initialServerUrl]);
-  useEffect(() => { setModelName(initialModelName); }, [initialModelName]);
+  useEffect(() => { setModelOverride(initialModelName); }, [initialModelName]);
 
-  const handleReferenceChange = (id: string) => {
-    setReferenceId(id);
-    const suggested = DEFAULT_LOCAL_MODEL_NAMES[id];
-    if (suggested) setModelName(suggested);
-  };
-
-  const handleSave = () => {
+  const handleTestAndSave = () => {
     const u = serverUrl.trim();
     if (!u) return;
-    onSave(u, modelName.trim(), apiKey.trim());
-    setApiKey('');
-    setShowKey(false);
-  };
-
-  const handleTest = () => {
-    const u = serverUrl.trim();
-    if (!u) return;
+    // Single combined action: probe the server, and if it answers, save the
+    // URL + model override + API key in one shot. The /v1/models response
+    // (delivered via the connectionStatus prop) becomes the source of truth
+    // for the model picker that appears below on success.
     onTest(u, apiKey.trim());
+    onSave(u, modelOverride.trim(), apiKey.trim());
+  };
+
+  // When the user picks a different model from the auto-discovered list,
+  // save immediately (no extra button click). The override field stays in
+  // sync so the user can see what's currently selected.
+  const handleModelPick = (id: string) => {
+    setModelOverride(id);
+    onSave(serverUrl.trim(), id, apiKey.trim());
   };
 
   // Status dot colour: green if last test succeeded OR (no test run yet AND configured),
@@ -417,6 +406,12 @@ function LocalLlmSection({
     return configured ? t('localConfigured') : t('localNotConfigured');
   })();
 
+  const discoveredModels = connectionStatus.models ?? [];
+  const showModelPicker = connectionStatus.state === 'success' && discoveredModels.length > 0;
+  // The currently-active model: override wins if user typed one, else the first
+  // discovered id (which is also what LocalProvider lazy-resolves to).
+  const activeModel = modelOverride.trim() || discoveredModels[0] || '';
+
   return (
     <Section title={t('localSection')}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-xs)' }}>
@@ -428,97 +423,32 @@ function LocalLlmSection({
         </span>
       </div>
 
-      {/* Server URL */}
-      <LabeledRow label={t('localServerUrlLabel')}>
+      {/* Server URL — the only required field */}
+      <LabeledRow label={
+        <span>{t('localServerUrlLabel')} <span style={{ color: 'var(--color-error, #ef4444)' }}>*</span></span>
+      }>
         <input
           type="text"
           value={serverUrl}
           onChange={(e) => setServerUrl(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') handleTestAndSave(); }}
           placeholder={t('localServerUrlPlaceholder')}
           style={textInputStyle}
         />
       </LabeledRow>
 
-      {/* Reference dropdown */}
-      <LabeledRow label={t('localReferenceLabel')}>
-        <select
-          value={referenceId}
-          onChange={(e) => handleReferenceChange(e.target.value)}
-          style={{ ...textInputStyle, fontFamily: 'inherit' }}
-        >
-          {LOCAL_REFERENCE_OPTIONS.map(m => (
-            <option key={m.id} value={m.id}>{m.label}</option>
-          ))}
-        </select>
-      </LabeledRow>
-
-      {/* Model name (what gets sent in the request body) */}
-      <LabeledRow label={t('localModelNameLabel')}>
-        <input
-          type="text"
-          value={modelName}
-          onChange={(e) => setModelName(e.target.value)}
-          placeholder={t('localModelNamePlaceholder')}
-          style={textInputStyle}
-        />
-      </LabeledRow>
-
-      {/* API key (optional, with help tooltip) */}
-      <LabeledRow
-        label={
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            {t('localApiKeyLabel')}
-            <span
-              title={t('localApiKeyTooltip')}
-              style={{
-                cursor: 'help',
-                width: 14, height: 14, borderRadius: '50%',
-                background: 'var(--color-bg-tertiary)',
-                border: '1px solid var(--color-border)',
-                color: 'var(--color-text-muted)',
-                fontSize: 9, fontWeight: 700,
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-              }}
-            >?</span>
-          </span>
-        }
-      >
-        <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
-          <input
-            type={showKey ? 'text' : 'password'}
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={maskedKey ? maskedKey : t('localApiKeyPlaceholder')}
-            style={{ ...textInputStyle, fontFamily: 'monospace' }}
-          />
-          <button onClick={() => setShowKey(s => !s)} style={smallButtonStyle}>
-            {showKey ? t('apiKeyHideKey') : t('apiKeyShowKey')}
-          </button>
-        </div>
-      </LabeledRow>
-
-      {/* Action row: Save + Test connection */}
+      {/* Combined Test + Save — the primary call to action */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)', flexWrap: 'wrap' }}>
         <button
-          onClick={handleSave}
-          disabled={!serverUrl.trim()}
-          style={{
-            ...saveButtonStyle,
-            opacity: serverUrl.trim() ? 1 : 0.5,
-            cursor: serverUrl.trim() ? 'pointer' : 'default',
-          }}
-        >
-          {t('apiKeySave')}
-        </button>
-        <button
-          onClick={handleTest}
+          onClick={handleTestAndSave}
           disabled={!serverUrl.trim() || connectionStatus.state === 'testing'}
           style={{
-            ...smallButtonStyle,
+            ...saveButtonStyle,
             opacity: serverUrl.trim() && connectionStatus.state !== 'testing' ? 1 : 0.5,
+            cursor: serverUrl.trim() && connectionStatus.state !== 'testing' ? 'pointer' : 'default',
           }}
         >
-          {connectionStatus.state === 'testing' ? t('localTesting') : t('localTestConnection')}
+          {connectionStatus.state === 'testing' ? t('localTesting') : t('localTestAndSave')}
         </button>
         {saveResult === 'saved' && (
           <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-accent)' }}>
@@ -532,8 +462,98 @@ function LocalLlmSection({
         )}
       </div>
 
+      {/* Auto-discovered model picker — only after a successful probe */}
+      {showModelPicker && (
+        <LabeledRow label={t('localModelPickerLabel')}>
+          <select
+            value={activeModel}
+            onChange={(e) => handleModelPick(e.target.value)}
+            style={{ ...textInputStyle, fontFamily: 'monospace' }}
+          >
+            {discoveredModels.map(id => (
+              <option key={id} value={id}>{id}</option>
+            ))}
+            {/* If the saved override isn't in the discovered list (server changed
+                between sessions), keep it as a selectable option so the user can
+                see what's currently in effect. */}
+            {modelOverride.trim() && !discoveredModels.includes(modelOverride.trim()) && (
+              <option value={modelOverride.trim()}>{modelOverride.trim()} (saved override)</option>
+            )}
+          </select>
+        </LabeledRow>
+      )}
+
       <HelpText>{t('localWarnTools')}</HelpText>
       <HelpText>{t('localHelp')}</HelpText>
+
+      {/* Advanced (optional) — API key + manual model override */}
+      <button
+        onClick={() => setAdvancedOpen(v => !v)}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          color: 'var(--color-text-muted)', fontSize: 'var(--text-xs)',
+          padding: 0, textAlign: 'left', display: 'flex', alignItems: 'center', gap: 4,
+        }}
+      >
+        <span>{advancedOpen ? '▾' : '▸'}</span>
+        <span>{t('localAdvancedToggle')}</span>
+      </button>
+
+      {advancedOpen && (
+        <div style={{
+          display: 'flex', flexDirection: 'column', gap: 'var(--space-xs)',
+          paddingLeft: 'var(--space-sm)',
+          borderLeft: '2px solid var(--color-border)',
+          marginLeft: 2,
+        }}>
+          {/* API key — optional, sent as Authorization: Bearer */}
+          <LabeledRow
+            label={
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                {t('localApiKeyLabel')}
+                <span
+                  title={t('localApiKeyTooltip')}
+                  style={{
+                    cursor: 'help',
+                    width: 14, height: 14, borderRadius: '50%',
+                    background: 'var(--color-bg-tertiary)',
+                    border: '1px solid var(--color-border)',
+                    color: 'var(--color-text-muted)',
+                    fontSize: 9, fontWeight: 700,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  }}
+                >?</span>
+              </span>
+            }
+          >
+            <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={maskedKey ? maskedKey : t('localApiKeyPlaceholder')}
+                style={{ ...textInputStyle, fontFamily: 'monospace' }}
+              />
+              <button onClick={() => setShowKey(s => !s)} style={smallButtonStyle}>
+                {showKey ? t('apiKeyHideKey') : t('apiKeyShowKey')}
+              </button>
+            </div>
+          </LabeledRow>
+
+          {/* Manual model override — for users whose server names a model
+              differently from the discovered list, or who want to force a
+              specific variant. Leave blank to use auto-discovery. */}
+          <LabeledRow label={t('localModelOverrideLabel')}>
+            <input
+              type="text"
+              value={modelOverride}
+              onChange={(e) => setModelOverride(e.target.value)}
+              placeholder={t('localModelOverridePlaceholder')}
+              style={textInputStyle}
+            />
+          </LabeledRow>
+        </div>
+      )}
     </Section>
   );
 }
