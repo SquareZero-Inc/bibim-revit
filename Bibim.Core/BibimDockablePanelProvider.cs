@@ -881,6 +881,8 @@ namespace Bibim.Core
         }
 
         /// <summary>
+        /// Creates a debug snapshot of the current task state for artifact recording.
+        /// </summary>
         private object CreateTaskDebugSnapshot(TaskState task)
         {
             if (task == null)
@@ -1518,7 +1520,7 @@ Constraints:
 
             try
             {
-                var compiler = new RoslynCompilerService();
+                var compiler = GetCompiler();
                 string code = BuildCurrentContextSummaryCode();
                 var compileResult = compiler.Compile(code);
 
@@ -2292,7 +2294,7 @@ Constraints:
                     SendSessionList();
     
 
-                    var compiler = new RoslynCompilerService();
+                    var compiler = GetCompiler();
                     var compileResult = compiler.Compile(code);
                     if (!compileResult.Success)
                     {
@@ -2641,6 +2643,21 @@ Constraints:
                 string version = payload["version"]?.ToString() ?? "";
                 if (string.IsNullOrWhiteSpace(url)) return;
 
+                // Defense-in-depth: even though `url` originates from VersionChecker's
+                // GitHub Releases API call, by the time it reaches this handler it has
+                // round-tripped through the WebView; treat as untrusted. Reject anything
+                // that isn't https on a known release-asset host. Failing closed here
+                // is the safer default — the user can always download manually via
+                // open_url if the URL is legitimate but on a new host.
+                if (!IsTrustedReleaseAssetUrl(url, out string urlRejectReason))
+                {
+                    Logger.Log("BridgeHandler",
+                        $"download_update: rejected URL ({urlRejectReason}): {Truncate(url, 200)}");
+                    _bridge?.PostMessage("download_progress",
+                        new { status = "error", error = "untrusted_url" });
+                    return;
+                }
+
                 string downloadsFolder = System.IO.Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
                 System.IO.Directory.CreateDirectory(downloadsFolder);
@@ -2652,10 +2669,43 @@ Constraints:
 
                 _bridge?.PostMessage("download_progress", new { status = "downloading" });
 
-                using (var stream = await _downloadHttpClient.GetStreamAsync(url))
-                using (var fs = new System.IO.FileStream(filePath, System.IO.FileMode.Create))
+                // Hard cap the entire download — body streaming bypasses the
+                // HttpClient.Timeout default (which only covers headers in async paths),
+                // so without a token a stuck connection can keep the UI in "downloading"
+                // forever. 10 min is generous for a ~50MB installer over a slow link.
+                using (var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(10)))
                 {
-                    await stream.CopyToAsync(fs);
+                    try
+                    {
+                        using (var response = await _downloadHttpClient.GetAsync(
+                                   url,
+                                   System.Net.Http.HttpCompletionOption.ResponseHeadersRead,
+                                   cts.Token))
+                        {
+                            response.EnsureSuccessStatusCode();
+                            using (var stream = await response.Content.ReadAsStreamAsync())
+                            using (var fs = new System.IO.FileStream(filePath, System.IO.FileMode.Create))
+                            {
+                                await stream.CopyToAsync(fs, 81920, cts.Token);
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        Logger.Log("BridgeHandler", "download_update: timeout (10 min) reached");
+                        _bridge?.PostMessage("download_progress",
+                            new { status = "error", error = "timeout" });
+                        try { if (System.IO.File.Exists(filePath)) System.IO.File.Delete(filePath); } catch { }
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log("BridgeHandler", $"download_update: {ex.GetType().Name}: {ex.Message}");
+                        _bridge?.PostMessage("download_progress",
+                            new { status = "error", error = "network" });
+                        try { if (System.IO.File.Exists(filePath)) System.IO.File.Delete(filePath); } catch { }
+                        return;
+                    }
                 }
 
                 _bridge?.PostMessage("download_complete", new { folderPath = downloadsFolder, fileName });
@@ -2872,7 +2922,7 @@ Constraints:
 
             try
             {
-                var compiler = new RoslynCompilerService();
+                var compiler = GetCompiler();
                 var compileResult = compiler.Compile(code);
                 _lastCodeGenResult = new CodeGenerationResult
                 {
@@ -2901,7 +2951,7 @@ Constraints:
             if (_llmService != null) return _llmService;
 
             var (provider, apiKey, modelId) = ConfigService.GetActiveCredentials();
-            var compiler = new RoslynCompilerService();
+            var compiler = GetCompiler();
 
             if (provider == "local")
             {
@@ -2961,7 +3011,7 @@ Constraints:
             if (_plannerLlmService != null) return _plannerLlmService;
 
             var (provider, apiKey, modelId) = ConfigService.GetActiveCredentials();
-            var compiler = new RoslynCompilerService();
+            var compiler = GetCompiler();
 
             if (provider == "local")
             {
@@ -3275,6 +3325,66 @@ Constraints:
             }
         }
 
+        // Fetch the process-wide RoslynCompilerService. BibimApp.OnStartup registers
+        // it eagerly; we fall back to `new` only when the panel is constructed before
+        // the container is initialized (test harness / linked-source builds), since
+        // RoslynCompilerService's ctor scans AppDomain assemblies (~100-300ms) and we
+        // do not want that cost on every chat turn / rerun.
+        private static RoslynCompilerService GetCompiler()
+        {
+            return ServiceContainer.GetService<RoslynCompilerService>()
+                ?? new RoslynCompilerService();
+        }
+
+        // Whitelist of hosts that the auto-update handler is allowed to fetch from.
+        // VersionChecker reads release metadata from api.github.com; the asset URL
+        // GitHub returns lives at objects.githubusercontent.com; release HTML pages
+        // (the fallback when no matching asset is found) live at github.com.
+        // Anything else is rejected — even if a future server-side bug or compromise
+        // points us at a different domain, the installer download stays off it.
+        private static readonly string[] _trustedReleaseAssetHosts =
+        {
+            "github.com",
+            "objects.githubusercontent.com"
+        };
+
+        private static bool IsTrustedReleaseAssetUrl(string url, out string reason)
+        {
+            reason = null;
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                reason = "empty";
+                return false;
+            }
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            {
+                reason = "not an absolute URI";
+                return false;
+            }
+            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                reason = $"scheme '{uri.Scheme}' is not https";
+                return false;
+            }
+            string host = uri.Host;
+            foreach (var allowed in _trustedReleaseAssetHosts)
+            {
+                if (host.Equals(allowed, StringComparison.OrdinalIgnoreCase) ||
+                    host.EndsWith("." + allowed, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            reason = $"host '{host}' not in trusted list";
+            return false;
+        }
+
+        private static string Truncate(string s, int max)
+        {
+            if (string.IsNullOrEmpty(s) || s.Length <= max) return s ?? string.Empty;
+            return s.Substring(0, max) + "…";
+        }
+
         /// <summary>
         /// Create a BibimToolService wired to the current Revit context and Roslyn services.
         /// The mainThreadInvoker dispatches RevitContext calls to the WPF/Revit main thread.
@@ -3284,7 +3394,7 @@ Constraints:
             EnsureContextProvider();
             return new BibimToolService(
                 _contextProvider,
-                new RoslynCompilerService(),
+                GetCompiler(),
                 _analyzerService,
                 async func =>
                 {

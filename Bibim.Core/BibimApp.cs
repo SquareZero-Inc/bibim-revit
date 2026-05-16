@@ -214,8 +214,9 @@ namespace Bibim.Core
                 if (CurrentUiApp != null)
                     CurrentUiApp.Application.DocumentChanged -= OnRevitDocumentChanged;
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.Log("BibimApp", $"OnShutdown cleanup warning: {ex.Message}");
             }
 
             ServiceContainer.Reset();

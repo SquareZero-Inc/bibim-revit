@@ -110,6 +110,13 @@ namespace Bibim.Core
                     int inputTokens = 0;
                     int outputTokens = 0;
                     int cachedTokens = 0;
+                    // Future-proofing: today this call sends tools=null so the
+                    // upstream stream is text-only, but a thinking model can still
+                    // emit thoughtSignature on a text part — and any later code path
+                    // that wires tools into streaming must echo signatures back to
+                    // avoid Gemini 3.x's 400 "missing thought_signature" (BIBIM-006).
+                    // Capture into a buffer mirroring TranslateResponseToAnthropicShape.
+                    JArray toolUseBlocks = null;
 
                     using (var stream = await httpResponse.Content.ReadAsStreamAsync())
                     using (var reader = new StreamReader(stream))
@@ -125,7 +132,7 @@ namespace Bibim.Core
                             {
                                 var payload = JObject.Parse(data);
 
-                                // Extract text deltas from candidate parts
+                                // Extract deltas from candidate parts
                                 var candidates = payload["candidates"] as JArray;
                                 if (candidates != null && candidates.Count > 0)
                                 {
@@ -134,11 +141,35 @@ namespace Bibim.Core
                                     {
                                         foreach (JObject part in parts)
                                         {
+                                            // Text delta
                                             string text = part["text"]?.ToString();
                                             if (!string.IsNullOrEmpty(text))
                                             {
                                                 fullText.Append(text);
                                                 onTextDelta?.Invoke(text);
+                                                continue;
+                                            }
+
+                                            // functionCall — surface as an Anthropic-shaped
+                                            // tool_use block. Mirror the non-streaming
+                                            // translator so an orchestrator can consume
+                                            // either code path interchangeably.
+                                            var fnCall = part["functionCall"] as JObject;
+                                            if (fnCall != null)
+                                            {
+                                                if (toolUseBlocks == null) toolUseBlocks = new JArray();
+                                                string syntheticId = $"gemini_call_{Guid.NewGuid():N}".Substring(0, 24);
+                                                var toolUse = new JObject
+                                                {
+                                                    ["type"]  = "tool_use",
+                                                    ["id"]    = syntheticId,
+                                                    ["name"]  = fnCall["name"]?.ToString(),
+                                                    ["input"] = fnCall["args"] ?? new JObject()
+                                                };
+                                                JToken sigToken = part["thoughtSignature"];
+                                                if (sigToken != null && sigToken.Type != JTokenType.Null)
+                                                    toolUse["_geminiThoughtSignature"] = sigToken;
+                                                toolUseBlocks.Add(toolUse);
                                             }
                                         }
                                     }
@@ -165,7 +196,8 @@ namespace Bibim.Core
                         FullText = fullText.ToString(),
                         InputTokens = inputTokens,
                         OutputTokens = outputTokens,
-                        CachedInputTokens = cachedTokens
+                        CachedInputTokens = cachedTokens,
+                        ToolUseBlocks = toolUseBlocks
                     };
                 }
             }

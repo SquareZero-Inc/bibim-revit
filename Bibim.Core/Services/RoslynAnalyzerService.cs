@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.RegularExpressions;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -228,32 +229,53 @@ namespace Bibim.Core
 
         private bool IsInsideTransactionBlock(SyntaxNode node)
         {
+            // Walk up the syntax tree. The invocation is inside a Transaction iff a
+            // `using (var t = new Transaction(...))` (block form) OR
+            // `using var t = new Transaction(...);` (declaration form) ancestor exists.
+            //
+            // NOTE: we used to short-circuit "true" when the enclosing method was named
+            // Execute, on the assumption BibimExecutionHandler wrapped Execute in an
+            // outer Transaction. It does not — RunCommit/RunDryRun wrap Execute in a
+            // TransactionGroup, and TransactionGroup does NOT allow modification APIs
+            // directly. Generated code must open its own Transaction. The old bypass
+            // also fired for any helper method literally named Execute regardless of
+            // its enclosing class, which was a coarse false-negative path. Both reasons
+            // mean the bypass was strictly hiding bugs — removed.
             var current = node.Parent;
             while (current != null)
             {
-                // Check for using statement with Transaction
+                // Match `Transaction` as a whole identifier so types like
+                // TransactionGroup / SubTransaction don't satisfy this check
+                // (they don't accept modification APIs directly).
                 if (current is UsingStatementSyntax usingStmt)
                 {
                     string usingText = usingStmt.Declaration?.ToString() ?? usingStmt.Expression?.ToString() ?? "";
-                    if (usingText.Contains("Transaction"))
+                    if (ContainsTransactionType(usingText))
                         return true;
                 }
 
-                // Check for local declaration in using context
                 if (current is LocalDeclarationStatementSyntax localDecl && localDecl.UsingKeyword.IsKind(SyntaxKind.UsingKeyword))
                 {
                     string declText = localDecl.ToString();
-                    if (declText.Contains("Transaction"))
+                    if (ContainsTransactionType(declText))
                         return true;
                 }
-
-                // Check if we're inside the Execute method (which is called within a Transaction by BibimExecutionHandler)
-                if (current is MethodDeclarationSyntax method && method.Identifier.Text == "Execute")
-                    return true;
 
                 current = current.Parent;
             }
             return false;
+        }
+
+        // Matches "Transaction" as a whole word, rejecting "TransactionGroup" and
+        // "SubTransaction" (those have their own semantics and don't satisfy
+        // BIBIM001's requirement of a real Transaction wrapping modification APIs).
+        private static readonly Regex _transactionTypeRegex = new Regex(
+            @"\bTransaction\b(?!Group)",
+            RegexOptions.Compiled);
+
+        private static bool ContainsTransactionType(string text)
+        {
+            return !string.IsNullOrEmpty(text) && _transactionTypeRegex.IsMatch(text);
         }
 
         #endregion

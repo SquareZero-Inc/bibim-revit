@@ -57,9 +57,14 @@ public class Test
         }
 
         [Fact]
-        public void BIBIM001_NoWarningInExecuteMethod()
+        public void BIBIM001_DetectsMissingTransactionInExecuteMethod()
         {
-            // BibimExecutionHandler wraps Execute() in a Transaction
+            // Regression for the v1.1 BIBIM001 heuristic fix: BibimExecutionHandler
+            // does NOT wrap Execute() in a Transaction (RunCommit uses no outer
+            // wrapper; RunDryRun uses a TransactionGroup, which doesn't allow
+            // modification APIs directly). Generated code must open its own
+            // Transaction even inside Execute. The previous heuristic skipped
+            // this check based on the method name alone, hiding real bugs.
             string code = @"
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -74,7 +79,61 @@ public class Program
     }
 }";
             var report = _analyzer.Analyze(code);
+            Assert.Contains(report.Diagnostics, d => d.Id == "BIBIM001" && d.Message.Contains("Delete"));
+        }
+
+        [Fact]
+        public void BIBIM001_NoWarningInExecuteMethodWhenWrappedInTransaction()
+        {
+            // The legitimate happy path: generated code wraps modifications in
+            // its own Transaction inside Execute. Must NOT flag.
+            string code = @"
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+
+public class Program
+{
+    public static object Execute(UIApplication uiApp)
+    {
+        var doc = uiApp.ActiveUIDocument.Document;
+        using (var tx = new Transaction(doc, ""delete""))
+        {
+            tx.Start();
+            doc.Delete(new ElementId(123));
+            tx.Commit();
+        }
+        return null;
+    }
+}";
+            var report = _analyzer.Analyze(code);
             Assert.DoesNotContain(report.Diagnostics, d => d.Id == "BIBIM001" && d.Message.Contains("Delete"));
+        }
+
+        [Fact]
+        public void BIBIM001_TransactionGroupAloneDoesNotSatisfy()
+        {
+            // TransactionGroup is NOT a Transaction — it cannot wrap modification
+            // APIs directly. BIBIM001 must still flag bare doc.Delete inside it.
+            string code = @"
+using Autodesk.Revit.DB;
+using Autodesk.Revit.UI;
+
+public class Program
+{
+    public static object Execute(UIApplication uiApp)
+    {
+        var doc = uiApp.ActiveUIDocument.Document;
+        using (var tg = new TransactionGroup(doc, ""group""))
+        {
+            tg.Start();
+            doc.Delete(new ElementId(123));
+            tg.Assimilate();
+        }
+        return null;
+    }
+}";
+            var report = _analyzer.Analyze(code);
+            Assert.Contains(report.Diagnostics, d => d.Id == "BIBIM001" && d.Message.Contains("Delete"));
         }
 
         #endregion

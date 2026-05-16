@@ -121,7 +121,7 @@ export default function ChatMessage({ msg, onUndo, onFeedback, onFeedbackDetail,
                   }}
                   title={t('helpful')}
                 >
-                  Up
+                  👍 {t('helpful')}
                 </button>
                 <button
                   onClick={() => onFeedback?.(msg.actionId!, 'down', msg.taskId)}
@@ -136,7 +136,7 @@ export default function ChatMessage({ msg, onUndo, onFeedback, onFeedbackDetail,
                   }}
                   title={t('notHelpful')}
                 >
-                  Down
+                  👎 {t('notHelpful')}
                 </button>
               </>
             )}

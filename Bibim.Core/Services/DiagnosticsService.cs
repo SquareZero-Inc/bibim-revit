@@ -43,6 +43,10 @@ namespace Bibim.Core
             // 5. Config / resource files
             report.Checks.Add(CheckConfigFiles());
 
+            // 6. Log file presence/size — surfaces orphaned legacy log at
+            //    %USERPROFILE%\bibim_v3_debug.txt that survived the v1.1 path move.
+            report.Checks.Add(CheckLogFile());
+
             // Log summary
             LogReport(report);
 
@@ -252,6 +256,52 @@ namespace Bibim.Core
             {
                 check.Status = DiagStatus.Error;
                 check.Detail = $"Config check failed: {ex.Message}";
+            }
+            return check;
+        }
+
+        // ── 6. Log File ─────────────────────────────────────
+
+        private static DiagCheck CheckLogFile()
+        {
+            var check = new DiagCheck { Name = "LogFile" };
+            try
+            {
+                string current = Logger.CurrentLogPath;
+                check.Extra["CurrentPath"] = current;
+
+                if (File.Exists(current))
+                {
+                    var info = new FileInfo(current);
+                    check.Status = DiagStatus.OK;
+                    check.Detail = $"Active log: {info.Length / 1024} KB at {current}";
+                    check.Extra["CurrentSizeBytes"] = info.Length;
+                }
+                else
+                {
+                    // Not an error — log is created on first Log() call.
+                    check.Status = DiagStatus.OK;
+                    check.Detail = $"Log will be created at {current} on first write";
+                }
+
+                // Orphaned legacy file from pre-v1.1 builds. Report as Info so the
+                // user can decide whether to delete it manually.
+                string legacy = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    "bibim_v3_debug.txt");
+                if (File.Exists(legacy))
+                {
+                    var legacyInfo = new FileInfo(legacy);
+                    check.Status = DiagStatus.Warning;
+                    check.Detail += $"\nLegacy log still present ({legacyInfo.Length / 1024} KB): {legacy}";
+                    check.Extra["LegacyPath"] = legacy;
+                    check.Extra["LegacySizeBytes"] = legacyInfo.Length;
+                }
+            }
+            catch (Exception ex)
+            {
+                check.Status = DiagStatus.Warning;
+                check.Detail = $"Log file check failed: {ex.Message}";
             }
             return check;
         }
