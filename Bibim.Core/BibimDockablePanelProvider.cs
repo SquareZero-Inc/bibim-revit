@@ -1632,11 +1632,30 @@ Constraints:
                             return;
                         }
 
-                        if (string.IsNullOrEmpty(ConfigService.GetActiveCredentials().ApiKey))
+                        // Pre-flight credential check. Local provider uses LocalServerUrl
+                        // as the gate (API key is optional — Ollama / LM Studio default
+                        // is unauthenticated). All other providers require an API key.
+                        var preCheckCreds = ConfigService.GetActiveCredentials();
+                        bool credsMissing;
+                        string credsMissingMessage;
+                        if (preCheckCreds.Provider == "local")
                         {
-                            PostStreamingEndMessage(UiText(
+                            credsMissing = string.IsNullOrWhiteSpace(
+                                ConfigService.GetRagConfig()?.LocalServerUrl);
+                            credsMissingMessage = UiText(
+                                "Local LLM server URL is not configured. Open **Settings** (gear icon) and enter your server URL under Local LLM.",
+                                "Local LLM 서버 URL이 설정되어 있지 않습니다. **설정** (톱니바퀴 아이콘) → Local LLM 섹션에서 서버 URL을 입력해 주세요.");
+                        }
+                        else
+                        {
+                            credsMissing = string.IsNullOrEmpty(preCheckCreds.ApiKey);
+                            credsMissingMessage = UiText(
                                 "API key is not configured for the selected model. Please go to **Settings** (gear icon) and enter the matching API key.",
-                                "선택한 모델용 API 키가 설정되어 있지 않습니다. **설정** (톱니바퀴 아이콘)에서 해당 키를 입력해 주세요."));
+                                "선택한 모델용 API 키가 설정되어 있지 않습니다. **설정** (톱니바퀴 아이콘)에서 해당 키를 입력해 주세요.");
+                        }
+                        if (credsMissing)
+                        {
+                            PostStreamingEndMessage(credsMissingMessage);
                             return;
                         }
 
