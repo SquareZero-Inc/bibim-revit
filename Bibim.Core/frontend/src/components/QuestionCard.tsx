@@ -137,7 +137,7 @@ export default function QuestionCard({ questions, onComplete }: Props) {
           fontSize: 'var(--text-xs)', color: 'var(--color-accent)',
           marginBottom: 'var(--space-sm)',
         }}>
-          Select all that apply
+          {t('questionCardMultiSelect')}
         </div>
       )}
 

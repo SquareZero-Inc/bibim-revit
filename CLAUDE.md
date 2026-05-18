@@ -53,7 +53,7 @@ Claude-powered Revit C# add-in (BYOK). Multi-target:
 - `LocalRevitRagService.FetchAsync()` indexes `RevitAPI.xml` (+ `RevitAPIUI.xml`, `RevitAPIIFC.xml`) on first call (~0.5 s), caches for the process lifetime.
 - Available to all 4 models via the `search_revit_api` tool (definition in `BibimToolService.GetToolDefinitions`).
 - Diet (v1.0.2): `TopK=3`, `MaxChunkDisplayChars=1200`, `MaxMembersPerChunk=30`. ClassRemarks / member Remarks / ParamDescriptions dropped — signature + summary only.
-- Debug logs: `[INDEX_BUILD_DONE]`, `[HIT]`, `[MISS]` in `%USERPROFILE%\bibim_v3_debug.txt`.
+- Debug logs: `[INDEX_BUILD_DONE]`, `[HIT]`, `[MISS]` in `%APPDATA%\BIBIM\logs\bibim_debug.txt` (was `%USERPROFILE%\bibim_v3_debug.txt` pre-v1.1).
 
 ## Token Optimization (v1.0.2)
 - **Anthropic prompt caching**: `cache_control: ephemeral` on system prompt + last tool definition (via `MarkLastToolForCaching` in `AnthropicProvider`). 5-min TTL.

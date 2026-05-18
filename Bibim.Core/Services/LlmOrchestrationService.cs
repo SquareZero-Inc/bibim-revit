@@ -55,12 +55,39 @@ namespace Bibim.Core
         }
 
         /// <summary>
+        /// Construct for the self-hosted local provider. Requires the user-configured
+        /// server URL and (optional) server-side model name override. <paramref name="apiKey"/>
+        /// may be null/empty for unauthenticated localhost setups (Ollama / LM Studio default).
+        /// </summary>
+        public LlmOrchestrationService(
+            string modelId,
+            string apiKey,
+            RoslynCompilerService compiler,
+            string baseUrl,
+            string serverModelName)
+            : this(LlmProviderFactory.Create(modelId, apiKey, _httpClient, baseUrl, serverModelName), compiler)
+        {
+        }
+
+        /// <summary>
         /// Convenience: construct using whichever provider/model/key is currently active in config.
-        /// Throws if no key is configured for the active provider.
+        /// Throws if no key is configured for the active provider (except local — where the
+        /// gating is server URL, not key).
         /// </summary>
         public static LlmOrchestrationService CreateFromActiveConfig(RoslynCompilerService compiler)
         {
             var (provider, apiKey, modelId) = ConfigService.GetActiveCredentials();
+
+            if (provider == "local")
+            {
+                var cfg = ConfigService.GetRagConfig();
+                if (string.IsNullOrWhiteSpace(cfg?.LocalServerUrl))
+                    throw new InvalidOperationException(
+                        "Local LLM server URL not configured. Open Settings → Local LLM.");
+                return new LlmOrchestrationService(
+                    modelId, apiKey, compiler, cfg.LocalServerUrl, cfg.LocalModelName);
+            }
+
             if (string.IsNullOrEmpty(apiKey))
                 throw new InvalidOperationException(
                     $"No API key configured for active provider '{provider}'. " +

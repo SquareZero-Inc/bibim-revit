@@ -60,7 +60,12 @@ namespace Bibim.Core
     }
 
     /// <summary>
-    /// Result of a streaming call: full assembled text plus token usage.
+    /// Result of a streaming call: full assembled text plus token usage. When the
+    /// upstream stream emits structured blocks (e.g. Gemini SSE chunks with
+    /// functionCall parts), providers may stash them in <see cref="ToolUseBlocks"/>
+    /// for an orchestrator that wires streaming through tool-use. Today the
+    /// orchestrator only consumes <see cref="FullText"/>; the block buffer exists
+    /// so providers can future-proof streaming without later interface churn.
     /// </summary>
     public class StreamResult
     {
@@ -69,5 +74,13 @@ namespace Bibim.Core
         public int OutputTokens { get; set; }
         public int CachedInputTokens { get; set; }
         public int CacheCreationInputTokens { get; set; }
+
+        /// <summary>
+        /// Tool-use blocks emitted during the stream, in Anthropic-shaped form
+        /// (<c>{type:"tool_use", id, name, input, ...}</c>). Provider-specific
+        /// fields (e.g. <c>_geminiThoughtSignature</c>) are preserved so the
+        /// orchestrator can echo them back on the next turn.
+        /// </summary>
+        public Newtonsoft.Json.Linq.JArray ToolUseBlocks { get; set; }
     }
 }

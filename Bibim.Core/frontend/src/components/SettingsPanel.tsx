@@ -4,22 +4,32 @@ import { t } from '../i18n';
 const FEEDBACK_URL_BUG = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
 const FEEDBACK_URL_FEATURE = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
 
-type Provider = 'anthropic' | 'openai' | 'gemini';
+type Provider = 'anthropic' | 'openai' | 'gemini' | 'local';
 type SaveResult = 'idle' | 'saved' | 'error';
 
-// Model catalogue exposed in v1.1.0. Order = display order.
+// Model catalogue exposed in v1.1.x. Order = display order.
 // Labels/notes localised via t() at render time.
 // `speed` is observed responsiveness on typical Revit codegen tasks (Apr 2026):
 //   '⚡⚡⚡' fast | '⚡⚡' medium | '⚡' slow
 type SpeedRating = '⚡⚡⚡' | '⚡⚡' | '⚡';
 
+type ModelNoteKey =
+  | 'modelNoteSonnet'
+  | 'modelNoteOpus47'
+  | 'modelNoteGpt55'
+  | 'modelNoteGemini31Pro'
+  | 'modelNoteLocalIdle';
+
 const MODELS: ReadonlyArray<{
   id: string;
   label: string;
   cost: string;
-  speed: SpeedRating;
-  speedKey: 'modelSpeedFast' | 'modelSpeedMedium' | 'modelSpeedSlow';
-  noteKey: 'modelNoteSonnet' | 'modelNoteOpus47' | 'modelNoteGpt55' | 'modelNoteGemini31Pro';
+  /** Cloud entries declare an observed speed glyph (Apr 2026 measurements).
+   *  Local is undefined — speed is hardware-dependent and can't be characterised
+   *  generically. The renderer suppresses the ⚡ chip when speed is absent. */
+  speed?: SpeedRating;
+  speedKey?: 'modelSpeedFast' | 'modelSpeedMedium' | 'modelSpeedSlow';
+  noteKey: ModelNoteKey;
   provider: Provider;
   recommended?: boolean;
 }> = [
@@ -27,7 +37,23 @@ const MODELS: ReadonlyArray<{
   { id: 'claude-opus-4-7',       label: 'Claude Opus 4.7',   cost: '~$0.20', speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteOpus47',       provider: 'anthropic' },
   { id: 'gpt-5.5',                label: 'GPT-5.5',           cost: '~$0.08', speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteGpt55',        provider: 'openai' },
   { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro',    cost: '~$0.03', speed: '⚡',    speedKey: 'modelSpeedSlow',   noteKey: 'modelNoteGemini31Pro',  provider: 'gemini' },
+  // Self-hosted local LLM — single entry. The active server-side model name is
+  // resolved at runtime (config override OR /v1/models auto-discovery) and
+  // surfaced as a dynamic note via the renderer, not via noteKey i18n.
+  // No per-call cost (BYO hardware), no speed glyph (hardware-dependent).
+  { id: 'local',                 label: 'Local LLM (Self-hosted)', cost: 'Self-hosted', noteKey: 'modelNoteLocalIdle', provider: 'local' },
 ];
+
+type LocalConnectionStatus = {
+  state: 'idle' | 'testing' | 'success' | 'error';
+  modelCount?: number;
+  firstModel?: string;
+  /** Full list of model ids advertised by the server's /v1/models response.
+   *  Used to populate the auto-discovered model picker so the user can pick
+   *  with one click instead of typing the exact server-side name. */
+  models?: string[];
+  error?: string;
+};
 
 interface Props {
   // Anthropic
@@ -45,6 +71,15 @@ interface Props {
   geminiMasked: string;
   onSaveGeminiKey: (key: string) => void;
   geminiSaveResult: SaveResult;
+  // Local self-hosted LLM (v1.1.x+)
+  localConfigured: boolean;
+  localServerUrl: string;
+  localModelName: string;
+  localMasked: string;
+  localSaveResult: SaveResult;
+  localConnectionStatus: LocalConnectionStatus;
+  onSaveLocalLlmConfig: (serverUrl: string, modelName: string, apiKey: string) => void;
+  onTestLocalConnection: (serverUrl: string, apiKey: string) => void;
   // Active model
   activeModel: string;
   onSaveModel: (modelId: string) => void;
@@ -57,6 +92,8 @@ export default function SettingsPanel(props: Props) {
     anthropicConfigured, anthropicMasked, onSaveAnthropicKey, anthropicSaveResult,
     openaiConfigured, openaiMasked, onSaveOpenAiKey, openaiSaveResult,
     geminiConfigured, geminiMasked, onSaveGeminiKey, geminiSaveResult,
+    localConfigured, localServerUrl, localModelName, localMasked, localSaveResult,
+    localConnectionStatus, onSaveLocalLlmConfig, onTestLocalConnection,
     activeModel, onSaveModel, onOpenUrl,
   } = props;
 
@@ -75,7 +112,9 @@ export default function SettingsPanel(props: Props) {
 
   // The header gear icon turns green only if the *active* model has its key configured.
   const activeProvider = MODELS.find(m => m.id === activeModel)?.provider ?? 'anthropic';
-  const activeReady = isProviderReady(activeProvider, anthropicConfigured, openaiConfigured, geminiConfigured);
+  const activeReady = isProviderReady(
+    activeProvider, anthropicConfigured, openaiConfigured, geminiConfigured, localConfigured,
+  );
 
   return (
     <div ref={panelRef} style={{ position: 'relative' }}>
@@ -130,39 +169,22 @@ export default function SettingsPanel(props: Props) {
             {t('apiKeyGuideLink')}
           </button>
 
-          {/* ── Section: Active Model ── */}
-          <Section title={t('claudeModel')}>
-            <HelpText>{t('claudeModelHelp')}</HelpText>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
-              {MODELS.map(m => {
-                const enabled = isProviderReady(m.provider, anthropicConfigured, openaiConfigured, geminiConfigured);
-                return (
-                  <ModelOption
-                    key={m.id}
-                    label={m.label}
-                    cost={`${m.cost} ${t('modelCostUnit')}`}
-                    note={t(m.noteKey)}
-                    speed={m.speed}
-                    speedTooltip={t(m.speedKey)}
-                    recommended={m.recommended}
-                    selected={activeModel === m.id}
-                    enabled={enabled}
-                    lockTooltip={
-                      m.provider === 'anthropic' ? t('modelLockedTooltipAnthropic') :
-                      m.provider === 'openai'    ? t('modelLockedTooltipOpenAI') :
-                                                   t('modelLockedTooltipGemini')
-                    }
-                    lockBadge={t('modelLocked')}
-                    onSelect={() => enabled && onSaveModel(m.id)}
-                  />
-                );
-              })}
-            </div>
-          </Section>
+          {/* ── Current setup summary chip ── */}
+          <CurrentSetupChip
+            activeModel={activeModel}
+            activeProvider={activeProvider}
+            activeReady={activeReady}
+            anthropicMasked={anthropicMasked}
+            openaiMasked={openaiMasked}
+            geminiMasked={geminiMasked}
+            localServerUrl={localServerUrl}
+            localModelName={localModelName}
+            localConnectionStatus={localConnectionStatus}
+          />
 
-          <Divider />
+          {/* ────────── Provider keys / connections ────────── */}
 
-          {/* ── Section: Anthropic Key ── */}
+          {/* Section: Anthropic Key */}
           <ProviderKeySection
             title={t('apiKey')}
             placeholder={t('apiKeyPlaceholder')}
@@ -175,7 +197,7 @@ export default function SettingsPanel(props: Props) {
 
           <Divider />
 
-          {/* ── Section: OpenAI Key ── */}
+          {/* Section: OpenAI Key */}
           <ProviderKeySection
             title={t('openaiSection')}
             placeholder={t('openaiKeyPlaceholder')}
@@ -188,7 +210,7 @@ export default function SettingsPanel(props: Props) {
 
           <Divider />
 
-          {/* ── Section: Gemini Key ── */}
+          {/* Section: Gemini Key */}
           <ProviderKeySection
             title={t('geminiSection')}
             placeholder={t('geminiKeyPlaceholder')}
@@ -198,6 +220,78 @@ export default function SettingsPanel(props: Props) {
             onSave={onSaveGeminiKey}
             help={t('geminiKeyHelp')}
           />
+
+          <Divider />
+
+          {/* Section: Local Self-hosted LLM (v1.1.x+) */}
+          <LocalLlmSection
+            configured={localConfigured}
+            initialServerUrl={localServerUrl}
+            initialModelName={localModelName}
+            maskedKey={localMasked}
+            saveResult={localSaveResult}
+            connectionStatus={localConnectionStatus}
+            onSave={onSaveLocalLlmConfig}
+            onTest={onTestLocalConnection}
+          />
+
+          <Divider />
+
+          {/* ────────── Active model picker (last — depends on keys above) ────────── */}
+          <Section title={t('claudeModel')}>
+            <HelpText>{t('claudeModelHelp')}</HelpText>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
+              {MODELS.map(m => {
+                const enabled = isProviderReady(
+                  m.provider, anthropicConfigured, openaiConfigured, geminiConfigured, localConfigured,
+                );
+                // Local-provider models don't have a per-call dollar cost — suppress unit.
+                const costLabel = m.provider === 'local' ? m.cost : `${m.cost} ${t('modelCostUnit')}`;
+
+                // The "local" entry's note is dynamic: when configured it shows the
+                // active server-side model name (override OR first discovered OR
+                // the literal "auto-discovered" hint). Cloud entries use static
+                // i18n via noteKey.
+                let displayNote: string;
+                if (m.id === 'local') {
+                  if (!localConfigured) {
+                    displayNote = t('modelNoteLocalIdle');
+                  } else {
+                    const active =
+                      (localModelName && localModelName.trim()) ||
+                      localConnectionStatus.firstModel ||
+                      (localConnectionStatus.models && localConnectionStatus.models[0]) ||
+                      t('modelNoteLocalAutoDetect');
+                    displayNote = t('modelNoteLocalActive').replace('{model}', active);
+                  }
+                } else {
+                  displayNote = t(m.noteKey);
+                }
+
+                return (
+                  <ModelOption
+                    key={m.id}
+                    label={m.label}
+                    cost={costLabel}
+                    note={displayNote}
+                    speed={m.speed}
+                    speedTooltip={m.speedKey ? t(m.speedKey) : ''}
+                    recommended={m.recommended}
+                    selected={activeModel === m.id}
+                    enabled={enabled}
+                    lockTooltip={
+                      m.provider === 'anthropic' ? t('modelLockedTooltipAnthropic') :
+                      m.provider === 'openai'    ? t('modelLockedTooltipOpenAI') :
+                      m.provider === 'gemini'    ? t('modelLockedTooltipGemini') :
+                                                   t('modelLockedTooltipLocal')
+                    }
+                    lockBadge={t('modelLocked')}
+                    onSelect={() => enabled && onSaveModel(m.id)}
+                  />
+                );
+              })}
+            </div>
+          </Section>
 
           <Divider />
 
@@ -219,8 +313,19 @@ export default function SettingsPanel(props: Props) {
   );
 }
 
-function isProviderReady(p: Provider, anth: boolean, oai: boolean, gem: boolean): boolean {
-  return p === 'anthropic' ? anth : p === 'openai' ? oai : gem;
+function isProviderReady(
+  p: Provider,
+  anth: boolean,
+  oai: boolean,
+  gem: boolean,
+  local: boolean,
+): boolean {
+  switch (p) {
+    case 'anthropic': return anth;
+    case 'openai':    return oai;
+    case 'gemini':    return gem;
+    case 'local':     return local;
+  }
 }
 
 // ── Sub-components ──────────────────────────────────────────────
@@ -238,6 +343,14 @@ function ProviderKeySection({
 }) {
   const [input, setInput] = useState('');
   const [show, setShow] = useState(false);
+  // Collapsed-by-default when the key is already configured. New users see
+  // every section fully expanded; returning users see a compact "✓ configured"
+  // summary with a Replace button to expand the input row again.
+  const [expanded, setExpanded] = useState(!configured);
+
+  // Sync collapse state when the configured prop changes externally — e.g. the
+  // user adds a key in another section and api_key_status comes back.
+  useEffect(() => { setExpanded(!configured); }, [configured]);
 
   const handleSave = () => {
     const trimmed = input.trim();
@@ -252,28 +365,360 @@ function ProviderKeySection({
       <StatusRow
         configured={configured}
         label={configured ? `${t('apiKeyConfigured')}: ${masked}` : t('apiKeyNotConfigured')}
+        action={configured ? {
+          label: expanded ? t('apiKeyCancel') : t('apiKeyReplace'),
+          onClick: () => setExpanded(v => !v),
+        } : undefined}
       />
-      <KeyInputRow
-        value={input}
-        show={show}
-        placeholder={placeholder}
-        onChange={setInput}
-        onToggleShow={() => setShow(p => !p)}
-        onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
-        showLabel={show ? t('apiKeyHideKey') : t('apiKeyShowKey')}
-      />
-      <SaveRow
-        disabled={!input.trim()}
-        onSave={handleSave}
-        result={saveResult}
-        savedText={t('apiKeySaved')}
-        errorText={t('apiKeySaveError')}
-        saveLabel={t('apiKeySave')}
-      />
-      <HelpText>{help}</HelpText>
+      {expanded && (
+        <>
+          <KeyInputRow
+            value={input}
+            show={show}
+            placeholder={placeholder}
+            onChange={setInput}
+            onToggleShow={() => setShow(p => !p)}
+            onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
+            showLabel={show ? t('apiKeyHideKey') : t('apiKeyShowKey')}
+          />
+          <SaveRow
+            disabled={!input.trim()}
+            onSave={handleSave}
+            result={saveResult}
+            savedText={t('apiKeySaved')}
+            errorText={t('apiKeySaveError')}
+            saveLabel={t('apiKeySave')}
+          />
+          <HelpText>{help}</HelpText>
+        </>
+      )}
     </Section>
   );
 }
+
+/**
+ * Compact one-line summary at the top of Settings showing what's currently
+ * powering BIBIM. Helps returning users see "I'm on Sonnet 4.6 via Anthropic"
+ * at a glance without scrolling through every key section.
+ */
+function CurrentSetupChip({
+  activeModel, activeProvider, activeReady,
+  anthropicMasked, openaiMasked, geminiMasked,
+  localServerUrl, localModelName, localConnectionStatus,
+}: {
+  activeModel: string;
+  activeProvider: Provider;
+  activeReady: boolean;
+  anthropicMasked: string;
+  openaiMasked: string;
+  geminiMasked: string;
+  localServerUrl: string;
+  localModelName: string;
+  localConnectionStatus: LocalConnectionStatus;
+}) {
+  // Display label for the active model. For the "local" id we substitute the
+  // actual server-side model name so the chip is informative even though the
+  // canonical id is just "local".
+  const modelEntry = MODELS.find(m => m.id === activeModel);
+  let modelLabel: string;
+  if (activeModel === 'local') {
+    const active = (localModelName && localModelName.trim())
+      || localConnectionStatus.firstModel
+      || (localConnectionStatus.models && localConnectionStatus.models[0])
+      || '';
+    modelLabel = active
+      ? `${modelEntry?.label ?? 'Local LLM'} — ${active}`
+      : (modelEntry?.label ?? 'Local LLM');
+  } else {
+    modelLabel = modelEntry?.label ?? activeModel;
+  }
+
+  // Provider chip — shows which auth is in effect for the active model.
+  // For local, surface the host portion of the URL (no scheme) so the user
+  // can verify which server is in use.
+  let providerHint = '';
+  if (activeProvider === 'anthropic') providerHint = anthropicMasked || 'anthropic';
+  else if (activeProvider === 'openai') providerHint = openaiMasked || 'openai';
+  else if (activeProvider === 'gemini') providerHint = geminiMasked || 'gemini';
+  else if (activeProvider === 'local') {
+    try {
+      const u = new URL(localServerUrl);
+      providerHint = u.host;
+    } catch {
+      providerHint = localServerUrl || 'local';
+    }
+  }
+
+  return (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 'var(--space-xs)',
+      padding: '6px 10px',
+      background: 'var(--color-bg-tertiary)',
+      border: '1px solid var(--color-border)',
+      borderRadius: 'var(--radius-md)',
+      fontSize: 'var(--text-xs)',
+    }}>
+      <span style={{
+        width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+        background: activeReady ? 'var(--color-accent)' : 'var(--color-warning, #f59e0b)',
+      }} />
+      {activeReady ? (
+        <>
+          <span style={{ color: 'var(--color-text-muted)' }}>{t('currentSetupActive')}:</span>
+          <span style={{ color: 'var(--color-text-primary)', fontWeight: 600 }}>{modelLabel}</span>
+          {providerHint && (
+            <>
+              <span style={{ color: 'var(--color-text-muted)' }}>{t('currentSetupVia')}</span>
+              <span style={{
+                color: 'var(--color-text-muted)',
+                fontFamily: 'monospace',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                flex: 1, minWidth: 0,
+              }}>{providerHint}</span>
+            </>
+          )}
+        </>
+      ) : (
+        <span style={{ color: 'var(--color-text-muted)' }}>{t('currentSetupNotConfigured')}</span>
+      )}
+    </div>
+  );
+}
+
+function LocalLlmSection({
+  configured, initialServerUrl, initialModelName, maskedKey, saveResult,
+  connectionStatus, onSave, onTest,
+}: {
+  configured: boolean;
+  initialServerUrl: string;
+  initialModelName: string;
+  maskedKey: string;
+  saveResult: SaveResult;
+  connectionStatus: LocalConnectionStatus;
+  onSave: (serverUrl: string, modelName: string, apiKey: string) => void;
+  onTest: (serverUrl: string, apiKey: string) => void;
+}) {
+  const [serverUrl, setServerUrl] = useState(initialServerUrl);
+  const [modelOverride, setModelOverride] = useState(initialModelName);
+  const [apiKey, setApiKey] = useState('');
+  const [showKey, setShowKey] = useState(false);
+  // Auto-expand Advanced section if any advanced field already has a saved value
+  // (API key configured or manual model name override). New users see it collapsed.
+  const [advancedOpen, setAdvancedOpen] = useState(Boolean(maskedKey) || Boolean(initialModelName));
+
+  // Reflect external prop changes (e.g. config reload) into local state
+  useEffect(() => { setServerUrl(initialServerUrl); }, [initialServerUrl]);
+  useEffect(() => { setModelOverride(initialModelName); }, [initialModelName]);
+
+  const handleTestAndSave = () => {
+    const u = serverUrl.trim();
+    if (!u) return;
+    // Single combined action: probe the server, and if it answers, save the
+    // URL + model override + API key in one shot. The /v1/models response
+    // (delivered via the connectionStatus prop) becomes the source of truth
+    // for the model picker that appears below on success.
+    onTest(u, apiKey.trim());
+    onSave(u, modelOverride.trim(), apiKey.trim());
+  };
+
+  // When the user picks a different model from the auto-discovered list,
+  // save immediately (no extra button click). The override field stays in
+  // sync so the user can see what's currently selected.
+  const handleModelPick = (id: string) => {
+    setModelOverride(id);
+    onSave(serverUrl.trim(), id, apiKey.trim());
+  };
+
+  // Status dot colour: green if last test succeeded OR (no test run yet AND configured),
+  // red if last test failed, yellow if neither configured nor tested.
+  const dotColor = (() => {
+    if (connectionStatus.state === 'success') return 'var(--color-accent)';
+    if (connectionStatus.state === 'error')   return 'var(--color-error, #ef4444)';
+    if (connectionStatus.state === 'testing') return 'var(--color-text-muted)';
+    return configured ? 'var(--color-accent)' : 'var(--color-warning, #f59e0b)';
+  })();
+
+  const statusLabel = (() => {
+    if (connectionStatus.state === 'testing') return t('localTesting');
+    if (connectionStatus.state === 'success')
+      return t('localTestSuccess').replace('{count}', String(connectionStatus.modelCount ?? 0));
+    if (connectionStatus.state === 'error')
+      return `${t('localTestFailure')}: ${connectionStatus.error ?? ''}`;
+    return configured ? t('localConfigured') : t('localNotConfigured');
+  })();
+
+  const discoveredModels = connectionStatus.models ?? [];
+  const showModelPicker = connectionStatus.state === 'success' && discoveredModels.length > 0;
+  // The currently-active model: override wins if user typed one, else the first
+  // discovered id (which is also what LocalProvider lazy-resolves to).
+  const activeModel = modelOverride.trim() || discoveredModels[0] || '';
+
+  return (
+    <Section title={t('localSection')}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-xs)' }}>
+        <span style={{
+          width: 8, height: 8, borderRadius: '50%', flexShrink: 0, background: dotColor,
+        }} />
+        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>
+          {statusLabel}
+        </span>
+      </div>
+
+      {/* Server URL — the only required field */}
+      <LabeledRow label={
+        <span>{t('localServerUrlLabel')} <span style={{ color: 'var(--color-error, #ef4444)' }}>*</span></span>
+      }>
+        <input
+          type="text"
+          value={serverUrl}
+          onChange={(e) => setServerUrl(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') handleTestAndSave(); }}
+          placeholder={t('localServerUrlPlaceholder')}
+          style={textInputStyle}
+        />
+      </LabeledRow>
+
+      {/* Combined Test + Save — the primary call to action */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-sm)', flexWrap: 'wrap' }}>
+        <button
+          onClick={handleTestAndSave}
+          disabled={!serverUrl.trim() || connectionStatus.state === 'testing'}
+          style={{
+            ...saveButtonStyle,
+            opacity: serverUrl.trim() && connectionStatus.state !== 'testing' ? 1 : 0.5,
+            cursor: serverUrl.trim() && connectionStatus.state !== 'testing' ? 'pointer' : 'default',
+          }}
+        >
+          {connectionStatus.state === 'testing' ? t('localTesting') : t('localTestAndSave')}
+        </button>
+        {saveResult === 'saved' && (
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-accent)' }}>
+            ✓ {t('apiKeySaved')}
+          </span>
+        )}
+        {saveResult === 'error' && (
+          <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-error, #ef4444)' }}>
+            {t('apiKeySaveError')}
+          </span>
+        )}
+      </div>
+
+      {/* Auto-discovered model picker — only after a successful probe */}
+      {showModelPicker && (
+        <LabeledRow label={t('localModelPickerLabel')}>
+          <select
+            value={activeModel}
+            onChange={(e) => handleModelPick(e.target.value)}
+            style={{ ...textInputStyle, fontFamily: 'monospace' }}
+          >
+            {discoveredModels.map(id => (
+              <option key={id} value={id}>{id}</option>
+            ))}
+            {/* If the saved override isn't in the discovered list (server changed
+                between sessions), keep it as a selectable option so the user can
+                see what's currently in effect. */}
+            {modelOverride.trim() && !discoveredModels.includes(modelOverride.trim()) && (
+              <option value={modelOverride.trim()}>{modelOverride.trim()} (saved override)</option>
+            )}
+          </select>
+        </LabeledRow>
+      )}
+
+      <HelpText>{t('localHelp')}</HelpText>
+
+      {/* Advanced (optional) — API key + manual model override */}
+      <button
+        onClick={() => setAdvancedOpen(v => !v)}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer',
+          color: 'var(--color-text-muted)', fontSize: 'var(--text-xs)',
+          padding: 0, textAlign: 'left', display: 'flex', alignItems: 'center', gap: 4,
+        }}
+      >
+        <span>{advancedOpen ? '▾' : '▸'}</span>
+        <span>{t('localAdvancedToggle')}</span>
+      </button>
+
+      {advancedOpen && (
+        <div style={{
+          display: 'flex', flexDirection: 'column', gap: 'var(--space-xs)',
+          paddingLeft: 'var(--space-sm)',
+          borderLeft: '2px solid var(--color-border)',
+          marginLeft: 2,
+        }}>
+          {/* API key — optional, sent as Authorization: Bearer */}
+          <LabeledRow
+            label={
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                {t('localApiKeyLabel')}
+                <span
+                  title={t('localApiKeyTooltip')}
+                  style={{
+                    cursor: 'help',
+                    width: 14, height: 14, borderRadius: '50%',
+                    background: 'var(--color-bg-tertiary)',
+                    border: '1px solid var(--color-border)',
+                    color: 'var(--color-text-muted)',
+                    fontSize: 9, fontWeight: 700,
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  }}
+                >?</span>
+              </span>
+            }
+          >
+            <div style={{ display: 'flex', gap: 'var(--space-xs)' }}>
+              <input
+                type={showKey ? 'text' : 'password'}
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder={maskedKey ? maskedKey : t('localApiKeyPlaceholder')}
+                style={{ ...textInputStyle, fontFamily: 'monospace' }}
+              />
+              <button onClick={() => setShowKey(s => !s)} style={smallButtonStyle}>
+                {showKey ? t('apiKeyHideKey') : t('apiKeyShowKey')}
+              </button>
+            </div>
+          </LabeledRow>
+
+          {/* Manual model override — for users whose server names a model
+              differently from the discovered list, or who want to force a
+              specific variant. Leave blank to use auto-discovery. */}
+          <LabeledRow label={t('localModelOverrideLabel')}>
+            <input
+              type="text"
+              value={modelOverride}
+              onChange={(e) => setModelOverride(e.target.value)}
+              placeholder={t('localModelOverridePlaceholder')}
+              style={textInputStyle}
+            />
+          </LabeledRow>
+        </div>
+      )}
+    </Section>
+  );
+}
+
+function LabeledRow({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      <span style={{ fontSize: 10, color: 'var(--color-text-muted)', fontWeight: 500 }}>{label}</span>
+      {children}
+    </div>
+  );
+}
+
+const textInputStyle: React.CSSProperties = {
+  flex: 1,
+  width: '100%',
+  padding: '5px 8px',
+  background: 'var(--color-bg-tertiary)',
+  border: '1px solid var(--color-border)',
+  borderRadius: 'var(--radius-md)',
+  color: 'var(--color-text-primary)',
+  fontSize: 'var(--text-xs)',
+  outline: 'none',
+  boxSizing: 'border-box',
+};
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -288,14 +733,38 @@ function Divider() {
   return <div style={{ height: 1, background: 'var(--color-border)', margin: '0 -4px' }} />;
 }
 
-function StatusRow({ configured, label }: { configured: boolean; label: string }) {
+function StatusRow({
+  configured, label, action,
+}: {
+  configured: boolean;
+  label: string;
+  /** Optional right-aligned text button — used by collapsed key sections
+   *  to surface a "Replace" / "Cancel" toggle. */
+  action?: { label: string; onClick: () => void };
+}) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-xs)' }}>
       <span style={{
         width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
         background: configured ? 'var(--color-accent)' : 'var(--color-warning, #f59e0b)',
       }} />
-      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>{label}</span>
+      <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', flex: 1 }}>{label}</span>
+      {action ? (
+        <button
+          onClick={action.onClick}
+          style={{
+            background: 'none',
+            border: 'none',
+            padding: 0,
+            color: 'var(--color-accent)',
+            fontSize: 'var(--text-xs)',
+            cursor: 'pointer',
+            textDecoration: 'underline',
+          }}
+        >
+          {action.label}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -375,7 +844,9 @@ function ModelOption({
   label: string;
   cost: string;
   note: string;
-  speed: '⚡⚡⚡' | '⚡⚡' | '⚡';
+  /** Optional — when omitted (e.g. for the self-hosted "local" entry whose
+   *  speed depends on the user's hardware) the ⚡ chip is suppressed. */
+  speed?: SpeedRating;
   speedTooltip: string;
   recommended?: boolean;
   selected: boolean;
@@ -427,18 +898,20 @@ function ModelOption({
               verticalAlign: 'middle',
             }}>★</span>
           )}
-          <span
-            title={speedTooltip}
-            style={{
-              marginLeft: 6,
-              fontSize: 10,
-              opacity: enabled ? 0.85 : 0.5,
-              verticalAlign: 'middle',
-              letterSpacing: -1,
-            }}
-          >
-            {speed}
-          </span>
+          {speed ? (
+            <span
+              title={speedTooltip}
+              style={{
+                marginLeft: 6,
+                fontSize: 10,
+                opacity: enabled ? 0.85 : 0.5,
+                verticalAlign: 'middle',
+                letterSpacing: -1,
+              }}
+            >
+              {speed}
+            </span>
+          ) : null}
         </span>
         <span style={{ fontSize: 10, opacity: 0.75 }}>
           {enabled ? note : lockBadge}

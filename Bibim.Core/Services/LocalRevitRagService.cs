@@ -35,9 +35,14 @@ namespace Bibim.Core
     internal static class LocalRevitRagService
     {
         // Lazy-loaded index — built on first call, cached for the process lifetime.
-        private static BM25Engine _engine;
-        private static string _indexedXmlPath;
-        private static readonly object _lock = new object();
+        // Volatile so the fast path (read outside _buildLock) sees a published
+        // engine without acquiring a lock on every search_revit_api invocation.
+        // The orchestrator can dispatch parallel tool_use blocks; without this
+        // bypass, every call after the first one would still take a lock just
+        // to read the cache.
+        private static volatile BM25Engine _engine;
+        private static volatile string _indexedXmlPath;
+        private static readonly object _buildLock = new object();
 
         // XML files to index (relative to RevitAPI.dll directory)
         private static readonly string[] XmlFileNames =
@@ -152,17 +157,25 @@ namespace Bibim.Core
 
         private static BM25Engine GetOrBuildEngine(string revitVersion)
         {
-            lock (_lock)
+            string xmlDir = ResolveRevitXmlDirectory();
+            if (string.IsNullOrEmpty(xmlDir))
             {
-                string xmlDir = ResolveRevitXmlDirectory();
+                Logger.Log("LocalRAG", "[INDEX] RevitAPI.xml directory not resolved");
+                return null;
+            }
 
-                if (string.IsNullOrEmpty(xmlDir))
-                {
-                    Logger.Log("LocalRAG", "[INDEX] RevitAPI.xml directory not resolved");
-                    return null;
-                }
+            // Fast path: engine already built for this XML location — no lock needed.
+            // Parallel search_revit_api tool_use blocks in a single LLM turn would
+            // otherwise serialize on _buildLock just to read the same cached engine.
+            var cached = _engine;
+            if (cached != null && string.Equals(_indexedXmlPath, xmlDir, StringComparison.OrdinalIgnoreCase))
+                return cached;
 
-                // If already built for this XML location, reuse
+            // Slow path: serialize the actual build. Double-check inside the lock
+            // so a second caller arriving during the first build returns the
+            // freshly-published engine instead of rebuilding.
+            lock (_buildLock)
+            {
                 if (_engine != null && string.Equals(_indexedXmlPath, xmlDir, StringComparison.OrdinalIgnoreCase))
                     return _engine;
 
@@ -178,14 +191,17 @@ namespace Bibim.Core
                     return null;
                 }
 
-                _engine = new BM25Engine(chunks);
+                var built = new BM25Engine(chunks);
+                // Publish path field first so a fast-path reader can't see a
+                // matching engine paired with a stale path.
                 _indexedXmlPath = xmlDir;
+                _engine = built;
 
                 Logger.Log("LocalRAG",
-                    $"[INDEX_BUILD_DONE] chunks={chunks.Count} bm25_tokens={_engine.ChunkCount} " +
+                    $"[INDEX_BUILD_DONE] chunks={chunks.Count} bm25_tokens={built.ChunkCount} " +
                     $"ms={buildSw.ElapsedMilliseconds} dir=\"{xmlDir}\"");
 
-                return _engine;
+                return built;
             }
         }
 

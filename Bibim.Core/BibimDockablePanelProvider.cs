@@ -881,6 +881,8 @@ namespace Bibim.Core
         }
 
         /// <summary>
+        /// Creates a debug snapshot of the current task state for artifact recording.
+        /// </summary>
         private object CreateTaskDebugSnapshot(TaskState task)
         {
             if (task == null)
@@ -1518,7 +1520,7 @@ Constraints:
 
             try
             {
-                var compiler = new RoslynCompilerService();
+                var compiler = GetCompiler();
                 string code = BuildCurrentContextSummaryCode();
                 var compileResult = compiler.Compile(code);
 
@@ -1630,11 +1632,30 @@ Constraints:
                             return;
                         }
 
-                        if (string.IsNullOrEmpty(ConfigService.GetActiveCredentials().ApiKey))
+                        // Pre-flight credential check. Local provider uses LocalServerUrl
+                        // as the gate (API key is optional — Ollama / LM Studio default
+                        // is unauthenticated). All other providers require an API key.
+                        var preCheckCreds = ConfigService.GetActiveCredentials();
+                        bool credsMissing;
+                        string credsMissingMessage;
+                        if (preCheckCreds.Provider == "local")
                         {
-                            PostStreamingEndMessage(UiText(
+                            credsMissing = string.IsNullOrWhiteSpace(
+                                ConfigService.GetRagConfig()?.LocalServerUrl);
+                            credsMissingMessage = UiText(
+                                "Local LLM server URL is not configured. Open **Settings** (gear icon) and enter your server URL under Local LLM.",
+                                "Local LLM 서버 URL이 설정되어 있지 않습니다. **설정** (톱니바퀴 아이콘) → Local LLM 섹션에서 서버 URL을 입력해 주세요.");
+                        }
+                        else
+                        {
+                            credsMissing = string.IsNullOrEmpty(preCheckCreds.ApiKey);
+                            credsMissingMessage = UiText(
                                 "API key is not configured for the selected model. Please go to **Settings** (gear icon) and enter the matching API key.",
-                                "선택한 모델용 API 키가 설정되어 있지 않습니다. **설정** (톱니바퀴 아이콘)에서 해당 키를 입력해 주세요."));
+                                "선택한 모델용 API 키가 설정되어 있지 않습니다. **설정** (톱니바퀴 아이콘)에서 해당 키를 입력해 주세요.");
+                        }
+                        if (credsMissing)
+                        {
+                            PostStreamingEndMessage(credsMissingMessage);
                             return;
                         }
 
@@ -2292,7 +2313,7 @@ Constraints:
                     SendSessionList();
     
 
-                    var compiler = new RoslynCompilerService();
+                    var compiler = GetCompiler();
                     var compileResult = compiler.Compile(code);
                     if (!compileResult.Success)
                     {
@@ -2468,6 +2489,110 @@ Constraints:
                     _bridge.PostMessage("model_save_result", new { success = false, error = ex.Message });
                 }
             });
+
+            // Save the self-hosted local LLM server config (URL + model name + optional API key).
+            // Empty serverUrl clears the config. Reset cached LLM service so subsequent calls
+            // pick up the new endpoint immediately.
+            RegisterSyncHandler("save_local_llm_config", payload =>
+            {
+                string serverUrl = payload["serverUrl"]?.ToString() ?? "";
+                string modelName = payload["modelName"]?.ToString() ?? "";
+                string apiKey    = payload["apiKey"]?.ToString() ?? "";
+                try
+                {
+                    ConfigService.SaveLocalServerConfig(serverUrl, modelName, apiKey);
+                    _llmService = null;
+                    _plannerLlmService = null;
+                    Logger.Log("BridgeHandler",
+                        $"Local LLM config saved — url={(string.IsNullOrEmpty(serverUrl) ? "(cleared)" : serverUrl)} model={(string.IsNullOrEmpty(modelName) ? "(none)" : modelName)} keyConfigured={!string.IsNullOrEmpty(apiKey)}");
+                    SendApiKeyStatus();
+                    _bridge.PostMessage("api_key_save_result", new { success = true, provider = "local" });
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log("BridgeHandler", $"save_local_llm_config failed: {ex.Message}");
+                    _bridge.PostMessage("api_key_save_result", new { success = false, provider = "local", error = ex.Message });
+                }
+            });
+
+            // Connection probe for the Local LLM section (red/blue indicator).
+            // Performs a GET /models against the supplied URL with optional bearer auth,
+            // returns parsed model count + sample model id, or the upstream error string.
+            RegisterAsyncHandler("test_local_connection", async payload =>
+            {
+                string serverUrl = payload["serverUrl"]?.ToString() ?? "";
+                string apiKey    = payload["apiKey"]?.ToString() ?? "";
+
+                if (string.IsNullOrWhiteSpace(serverUrl))
+                {
+                    _bridge.PostMessage("local_connection_test_result", new
+                    {
+                        success = false,
+                        error = "Server URL is empty."
+                    });
+                    return;
+                }
+
+                try
+                {
+                    // Construct a throwaway provider just for the /models call.
+                    // modelId is required by the ctor but unused on /models.
+                    var probe = new LocalProvider(
+                        apiKey: apiKey,
+                        modelId: "probe/dummy",
+                        httpClient: _downloadHttpClient,
+                        baseUrl: serverUrl,
+                        serverModelName: null);
+
+                    using (var cts = new CancellationTokenSource(TimeSpan.FromSeconds(8)))
+                    {
+                        var modelsJson = await probe.ListModelsAsync(cts.Token);
+                        var data = modelsJson?["data"] as Newtonsoft.Json.Linq.JArray;
+                        int count = data?.Count ?? 0;
+
+                        // Return the full id list (capped at 50 entries to bound the
+                        // payload — most local servers expose 1-10 models, but some
+                        // proxies in front of model hubs expose hundreds). The frontend
+                        // uses this list to auto-populate the model selector so the
+                        // user doesn't have to know the exact server-side model name.
+                        var modelIds = new List<string>();
+                        if (data != null)
+                        {
+                            foreach (var entry in data)
+                            {
+                                if (modelIds.Count >= 50) break;
+                                string id = entry?["id"]?.ToString();
+                                if (!string.IsNullOrWhiteSpace(id)) modelIds.Add(id);
+                            }
+                        }
+
+                        _bridge.PostMessage("local_connection_test_result", new
+                        {
+                            success = true,
+                            modelCount = count,
+                            firstModel = modelIds.Count > 0 ? modelIds[0] : "",
+                            models = modelIds   // NEW: full list for the auto-populate dropdown
+                        });
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                    _bridge.PostMessage("local_connection_test_result", new
+                    {
+                        success = false,
+                        error = "Connection timed out after 8 seconds."
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log("BridgeHandler", $"test_local_connection failed: {ex.Message}");
+                    _bridge.PostMessage("local_connection_test_result", new
+                    {
+                        success = false,
+                        error = ex.Message
+                    });
+                }
+            });
             RegisterSyncHandler("get_code_snippet", payload =>
             {
                 var snippet = _codeLibrary?.GetById(payload["id"]?.ToString());
@@ -2537,6 +2662,21 @@ Constraints:
                 string version = payload["version"]?.ToString() ?? "";
                 if (string.IsNullOrWhiteSpace(url)) return;
 
+                // Defense-in-depth: even though `url` originates from VersionChecker's
+                // GitHub Releases API call, by the time it reaches this handler it has
+                // round-tripped through the WebView; treat as untrusted. Reject anything
+                // that isn't https on a known release-asset host. Failing closed here
+                // is the safer default — the user can always download manually via
+                // open_url if the URL is legitimate but on a new host.
+                if (!IsTrustedReleaseAssetUrl(url, out string urlRejectReason))
+                {
+                    Logger.Log("BridgeHandler",
+                        $"download_update: rejected URL ({urlRejectReason}): {Truncate(url, 200)}");
+                    _bridge?.PostMessage("download_progress",
+                        new { status = "error", error = "untrusted_url" });
+                    return;
+                }
+
                 string downloadsFolder = System.IO.Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
                 System.IO.Directory.CreateDirectory(downloadsFolder);
@@ -2548,10 +2688,43 @@ Constraints:
 
                 _bridge?.PostMessage("download_progress", new { status = "downloading" });
 
-                using (var stream = await _downloadHttpClient.GetStreamAsync(url))
-                using (var fs = new System.IO.FileStream(filePath, System.IO.FileMode.Create))
+                // Hard cap the entire download — body streaming bypasses the
+                // HttpClient.Timeout default (which only covers headers in async paths),
+                // so without a token a stuck connection can keep the UI in "downloading"
+                // forever. 10 min is generous for a ~50MB installer over a slow link.
+                using (var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromMinutes(10)))
                 {
-                    await stream.CopyToAsync(fs);
+                    try
+                    {
+                        using (var response = await _downloadHttpClient.GetAsync(
+                                   url,
+                                   System.Net.Http.HttpCompletionOption.ResponseHeadersRead,
+                                   cts.Token))
+                        {
+                            response.EnsureSuccessStatusCode();
+                            using (var stream = await response.Content.ReadAsStreamAsync())
+                            using (var fs = new System.IO.FileStream(filePath, System.IO.FileMode.Create))
+                            {
+                                await stream.CopyToAsync(fs, 81920, cts.Token);
+                            }
+                        }
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        Logger.Log("BridgeHandler", "download_update: timeout (10 min) reached");
+                        _bridge?.PostMessage("download_progress",
+                            new { status = "error", error = "timeout" });
+                        try { if (System.IO.File.Exists(filePath)) System.IO.File.Delete(filePath); } catch { }
+                        return;
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Log("BridgeHandler", $"download_update: {ex.GetType().Name}: {ex.Message}");
+                        _bridge?.PostMessage("download_progress",
+                            new { status = "error", error = "network" });
+                        try { if (System.IO.File.Exists(filePath)) System.IO.File.Delete(filePath); } catch { }
+                        return;
+                    }
                 }
 
                 _bridge?.PostMessage("download_complete", new { folderPath = downloadsFolder, fileName });
@@ -2586,19 +2759,36 @@ Constraints:
                 string anthropicMasked = ConfigService.GetMaskedKeyForProvider("anthropic");
                 string openAiMasked    = ConfigService.GetMaskedKeyForProvider("openai");
                 string geminiMasked    = ConfigService.GetMaskedKeyForProvider("gemini");
+                string localMasked     = ConfigService.GetMaskedKeyForProvider("local");
                 string activeModel = ConfigService.GetRagConfig()?.ClaudeModel ?? ConfigService.DefaultModelId;
                 string activeProvider = ConfigService.GetActiveProviderName();
 
+                var cfg = ConfigService.GetRagConfig();
+                string localServerUrl = cfg?.LocalServerUrl ?? "";
+                string localModelName = cfg?.LocalModelName ?? "";
+                // Local "configured" is gated by server URL, NOT key (key is optional).
+                bool localConfigured = !string.IsNullOrWhiteSpace(localServerUrl);
+
+                // Aggregate active state — for local, key absence is allowed when URL is set.
+                bool activeConfigured = activeProvider == "local"
+                    ? localConfigured
+                    : !string.IsNullOrEmpty(ConfigService.GetActiveCredentials().ApiKey);
+
                 _bridge?.PostMessage("api_key_status", new
                 {
-                    // Aggregate active state — true if the *active provider* has a key.
-                    configured = !string.IsNullOrEmpty(ConfigService.GetActiveCredentials().ApiKey),
+                    configured = activeConfigured,
                     activeProvider,
                     activeModel,
                     // Per-provider status for the UI's gated model selector.
                     anthropic = new { configured = !string.IsNullOrEmpty(anthropicMasked), maskedKey = anthropicMasked },
                     openai    = new { configured = !string.IsNullOrEmpty(openAiMasked),    maskedKey = openAiMasked },
                     gemini    = new { configured = !string.IsNullOrEmpty(geminiMasked),    maskedKey = geminiMasked },
+                    local     = new {
+                        configured = localConfigured,
+                        serverUrl  = localServerUrl,
+                        modelName  = localModelName,
+                        maskedKey  = localMasked
+                    },
                     // Legacy fields kept so older frontend builds keep rendering.
                     maskedKey = anthropicMasked,
                     claudeModel = activeModel,
@@ -2751,7 +2941,7 @@ Constraints:
 
             try
             {
-                var compiler = new RoslynCompilerService();
+                var compiler = GetCompiler();
                 var compileResult = compiler.Compile(code);
                 _lastCodeGenResult = new CodeGenerationResult
                 {
@@ -2780,13 +2970,27 @@ Constraints:
             if (_llmService != null) return _llmService;
 
             var (provider, apiKey, modelId) = ConfigService.GetActiveCredentials();
-            if (string.IsNullOrEmpty(apiKey))
-                throw new InvalidOperationException(
-                    $"API key for provider '{provider}' not configured. " +
-                    $"Open Settings and add the matching key for model '{modelId}'.");
+            var compiler = GetCompiler();
 
-            var compiler = new RoslynCompilerService();
-            _llmService = new LlmOrchestrationService(modelId, apiKey, compiler);
+            if (provider == "local")
+            {
+                // Local self-hosted: gating is server URL, not API key (key optional).
+                var cfg = ConfigService.GetRagConfig();
+                if (string.IsNullOrWhiteSpace(cfg?.LocalServerUrl))
+                    throw new InvalidOperationException(
+                        "Local LLM server URL not configured. " +
+                        $"Open Settings → Local LLM and enter your server URL for model '{modelId}'.");
+                _llmService = new LlmOrchestrationService(
+                    modelId, apiKey, compiler, cfg.LocalServerUrl, cfg.LocalModelName);
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(apiKey))
+                    throw new InvalidOperationException(
+                        $"API key for provider '{provider}' not configured. " +
+                        $"Open Settings and add the matching key for model '{modelId}'.");
+                _llmService = new LlmOrchestrationService(modelId, apiKey, compiler);
+            }
 
             // Wire streaming events to bridge
             _llmService.OnStreamingDelta += (delta) =>
@@ -2826,12 +3030,26 @@ Constraints:
             if (_plannerLlmService != null) return _plannerLlmService;
 
             var (provider, apiKey, modelId) = ConfigService.GetActiveCredentials();
-            if (string.IsNullOrEmpty(apiKey))
-                throw new InvalidOperationException(
-                    $"API key for provider '{provider}' not configured. " +
-                    $"Open Settings and add the matching key for model '{modelId}'.");
+            var compiler = GetCompiler();
 
-            _plannerLlmService = new LlmOrchestrationService(modelId, apiKey, new RoslynCompilerService());
+            if (provider == "local")
+            {
+                var cfg = ConfigService.GetRagConfig();
+                if (string.IsNullOrWhiteSpace(cfg?.LocalServerUrl))
+                    throw new InvalidOperationException(
+                        "Local LLM server URL not configured. " +
+                        $"Open Settings → Local LLM and enter your server URL for model '{modelId}'.");
+                _plannerLlmService = new LlmOrchestrationService(
+                    modelId, apiKey, compiler, cfg.LocalServerUrl, cfg.LocalModelName);
+            }
+            else
+            {
+                if (string.IsNullOrEmpty(apiKey))
+                    throw new InvalidOperationException(
+                        $"API key for provider '{provider}' not configured. " +
+                        $"Open Settings and add the matching key for model '{modelId}'.");
+                _plannerLlmService = new LlmOrchestrationService(modelId, apiKey, compiler);
+            }
             _plannerLlmService.OnTokenUsage += (info) =>
             {
                 TokenTracker.Track("task_planner", _plannerLlmService.ProviderName, info.Model,
@@ -3126,6 +3344,66 @@ Constraints:
             }
         }
 
+        // Fetch the process-wide RoslynCompilerService. BibimApp.OnStartup registers
+        // it eagerly; we fall back to `new` only when the panel is constructed before
+        // the container is initialized (test harness / linked-source builds), since
+        // RoslynCompilerService's ctor scans AppDomain assemblies (~100-300ms) and we
+        // do not want that cost on every chat turn / rerun.
+        private static RoslynCompilerService GetCompiler()
+        {
+            return ServiceContainer.GetService<RoslynCompilerService>()
+                ?? new RoslynCompilerService();
+        }
+
+        // Whitelist of hosts that the auto-update handler is allowed to fetch from.
+        // VersionChecker reads release metadata from api.github.com; the asset URL
+        // GitHub returns lives at objects.githubusercontent.com; release HTML pages
+        // (the fallback when no matching asset is found) live at github.com.
+        // Anything else is rejected — even if a future server-side bug or compromise
+        // points us at a different domain, the installer download stays off it.
+        private static readonly string[] _trustedReleaseAssetHosts =
+        {
+            "github.com",
+            "objects.githubusercontent.com"
+        };
+
+        private static bool IsTrustedReleaseAssetUrl(string url, out string reason)
+        {
+            reason = null;
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                reason = "empty";
+                return false;
+            }
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            {
+                reason = "not an absolute URI";
+                return false;
+            }
+            if (!string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                reason = $"scheme '{uri.Scheme}' is not https";
+                return false;
+            }
+            string host = uri.Host;
+            foreach (var allowed in _trustedReleaseAssetHosts)
+            {
+                if (host.Equals(allowed, StringComparison.OrdinalIgnoreCase) ||
+                    host.EndsWith("." + allowed, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            reason = $"host '{host}' not in trusted list";
+            return false;
+        }
+
+        private static string Truncate(string s, int max)
+        {
+            if (string.IsNullOrEmpty(s) || s.Length <= max) return s ?? string.Empty;
+            return s.Substring(0, max) + "…";
+        }
+
         /// <summary>
         /// Create a BibimToolService wired to the current Revit context and Roslyn services.
         /// The mainThreadInvoker dispatches RevitContext calls to the WPF/Revit main thread.
@@ -3135,7 +3413,7 @@ Constraints:
             EnsureContextProvider();
             return new BibimToolService(
                 _contextProvider,
-                new RoslynCompilerService(),
+                GetCompiler(),
                 _analyzerService,
                 async func =>
                 {
