@@ -10,6 +10,21 @@
 
 **자체 LLM 서버 주소만 입력하면 BIBIM이 그 안에서 동작합니다. 클라우드 API 안 거치고, 데이터 외부 유출 없이, 토큰 비용 0으로.**
 
+v1.0.2가 클라우드 3종 (Claude / GPT / Gemini)을 BYOK로 열었다면, **v1.1.0은 self-hosted까지 열어 BIBIM의 BYOK 약속이 진짜로 완성**됩니다. 동시에 코드 생성 정확도·시작 속도·보안·UX 전 영역에서 polish가 한꺼번에 들어갔습니다.
+
+---
+
+## 이번 릴리즈의 핵심 (한눈에)
+
+| 영역 | 변화 | 누가 체감 |
+|------|------|---------|
+| 🆕 **Self-hosted LLM 지원** | Ollama / LM Studio / vLLM / llama.cpp 등 OpenAI 호환 서버 직접 연결. URL 한 줄 + 자동 모델 감지 | NDA 환경 · 사내망 GPU 운영 기업 · 토큰 비용 부담 헤비 유저 |
+| ✅ **코드 생성 정확도 ↑** | BIBIM001 (Transaction 필수) 분석기가 `Execute`라는 메서드명 만나면 단락 처리하던 false-positive 픽스 | **모든 사용자** — 코드 생성이 더 견고해짐 |
+| ⚡ **세션 시작 1~2초 단축** | `RoslynCompilerService` 진짜 싱글톤화 + 로컬 RAG 캐시 lock-free fast-path | 헤비 사용 패턴 (자주 panel 띄우는 경우) |
+| 🔒 **자동 업데이트 보안 강화** | host 화이트리스트 (`github.com` / `objects.githubusercontent.com`만 허용) + 10분 타임아웃 + 부분 다운로드 정리 | 모든 사용자 — 자동 업데이트 안전성 ↑ |
+| 🎨 **Settings 화면 전면 개편** | 활성 모델 한눈 chip · 등록된 키 섹션 자동 접힘 · Local LLM 단일 entry로 통합 | 재방문 사용자 — 시각 부담 약 50% 감소 |
+| 🧹 **코드 헬스** | `#if NET48` 조건부 컴파일 −432줄 · 죽은 클래스 제거 · 단위 테스트 64/64 통과 | 향후 빌드 안정성·기여자 학습 곡선 |
+
 ---
 
 ## 주요 변경사항

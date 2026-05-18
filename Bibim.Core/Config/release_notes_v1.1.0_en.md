@@ -10,6 +10,21 @@
 
 **Drop in your local LLM server URL and BIBIM runs on it. No cloud round-trip, no data leaving your network, zero token cost.**
 
+v1.0.2 opened BIBIM to three cloud LLMs (Claude / GPT / Gemini) via BYOK. **v1.1.0 opens it to self-hosted, completing the BYOK promise** — and at the same time tightens code-generation accuracy, session startup, auto-updater security, and Settings UX across the board.
+
+---
+
+## This release at a glance
+
+| Area | What changed | Who feels it |
+|------|------|---------|
+| 🆕 **Self-hosted LLM support** | Connect directly to Ollama / LM Studio / vLLM / llama.cpp — any OpenAI-compatible server. One URL field + auto model discovery. | NDA / data-residency teams · firms with corporate GPU · heavy users tired of per-call cost |
+| ✅ **Code-generation accuracy ↑** | The BIBIM001 (Transaction-required) analyzer no longer short-circuits when it sees a method named `Execute` — a longstanding false-positive that hid missing-Transaction bugs in generated code. | **Every user** — code generation is meaningfully more robust |
+| ⚡ **1–2 s faster session start** | `RoslynCompilerService` is now a real singleton (was being `new`'d six times); local RAG cache fast-path runs lock-free. | Heavy use patterns (frequently re-opening the panel) |
+| 🔒 **Auto-updater hardened** | Host whitelist (`github.com` / `objects.githubusercontent.com` only) + 10-min timeout + partial-download cleanup. | All users — auto-update is safer end-to-end |
+| 🎨 **Settings panel overhaul** | Active-model chip at the top · configured key sections collapse · single Local LLM entry in the model picker. | Returning users — roughly half the visual density |
+| 🧹 **Code health** | `−432` lines of dead `#if NET48` conditional compilation · zero-reference class removed · 64 / 64 unit tests passing. | Future build stability · contributor onramp |
+
 ---
 
 ## What's new
