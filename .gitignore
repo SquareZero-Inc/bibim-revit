@@ -402,3 +402,8 @@ share/
 
 # Test result snapshots (regenerated on each run)
 Bibim.Core.Tests/TestData/generated/
+
+# TypeScript incremental-build cache (tsc -b / project references).
+# Pure local performance cache — content is machine-specific and gets
+# rewritten on every `npm run build`. Never useful to commit.
+*.tsbuildinfo
