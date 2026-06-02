@@ -1269,7 +1269,23 @@ Question rules:
                 "설명", "요약", "분석", "알려", "최대한 많이",
                 "describe", "summary", "summarize", "analyze", "tell me");
 
-            return mentionsCurrentContext && asksForDescription;
+            // Negative gate — if the prompt also expresses a WRITE intent (create / place /
+            // modify / model / export), this is NOT a pure read-only summary task. We saw
+            // false positives in the field where a modeling request whose Q&A answers
+            // mentioned "현재 뷰" + planner-paraphrased Steps containing "분석" got
+            // misrouted into the model-summary branch, requiring the user to re-prompt
+            // before any actual codegen ran. The right long-term fix is the Category
+            // enum from the planner-revision branch; this gate is the safe shim until
+            // that lands.
+            bool mentionsWriteAction = ContainsAny(text,
+                "만들", "생성", "배치", "추가", "모델링", "올려", "올리",
+                "수정", "변경", "삭제", "지워", "삽입", "그리",
+                "export", "출력", "내보내", "내보내기", "이동", "옮겨",
+                "복사", "복제", "회전", "rename", "rename",
+                "create", "make", "place", "add", "modify", "edit", "build",
+                "delete", "remove", "move", "copy", "rotate");
+
+            return mentionsCurrentContext && asksForDescription && !mentionsWriteAction;
         }
 
         private string BuildCurrentContextSummaryCode()
@@ -2829,7 +2845,8 @@ Constraints:
                     updateMandatory = update?.IsMandatory == true,
                     latestVersion = update?.LatestVersion,
                     downloadUrl = update?.DownloadUrl,
-                    releaseNotes = update?.ReleaseNotes
+                    releaseNotes = update?.ReleaseNotes,
+                    releaseNotesUrl = update?.ReleaseNotesUrl
                 });
             }
             catch (Exception ex)
@@ -2854,7 +2871,8 @@ Constraints:
                     currentVersion = result?.CurrentVersion ?? BibimApp.AppVersion,
                     latestVersion = result?.LatestVersion,
                     downloadUrl = result?.DownloadUrl,
-                    releaseNotes = result?.ReleaseNotes
+                    releaseNotes = result?.ReleaseNotes,
+                    releaseNotesUrl = result?.ReleaseNotesUrl
                 });
             }
             catch (Exception ex)

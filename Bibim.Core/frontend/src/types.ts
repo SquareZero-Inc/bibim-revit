@@ -182,5 +182,16 @@ export interface UpdateInfo {
   currentVersion: string;
   latestVersion: string;
   downloadUrl?: string;
+  /**
+   * Short one-line headline extracted from the GitHub release body
+   * (capped to ~140 chars backend-side). The full markdown body is NOT
+   * shipped through the bridge — it lives on the GitHub release page,
+   * which the user can open via {@link releaseNotesUrl}.
+   */
   releaseNotes?: string;
+  /**
+   * GitHub release page URL (html_url). Frontend uses this for a
+   * "View full release notes" link in the update banner.
+   */
+  releaseNotesUrl?: string;
 }

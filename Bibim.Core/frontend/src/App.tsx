@@ -156,15 +156,45 @@ export default function App() {
             color: '#fff',
             fontSize: 'var(--text-xs)',
             flexShrink: 0,
+            // Defensive CSS clamp — the release-notes headline is now truncated
+            // backend-side, but keep a single-line cap here so any future shape
+            // change (or a non-truncated legacy payload from an older Revit
+            // installer) cannot blow the alert bar into the multi-thousand-
+            // pixel text wall we shipped in v1.1.0.
+            maxHeight: 44,
+            overflow: 'hidden',
+            gap: 'var(--space-sm)',
           }}>
-            <span>
+            <span style={{
+              flex: 1,
+              minWidth: 0,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}>
               {chat.downloadState === 'complete'
                 ? t('downloadComplete')
                 : chat.updateInfo.isMandatory ? t('updateMandatory') : t('updateAvailable')}
               {chat.downloadState === 'idle' && ` — v${chat.updateInfo.latestVersion}`}
               {(chat.downloadState === 'idle' && chat.updateInfo.releaseNotes) ? ` · ${chat.updateInfo.releaseNotes}` : ''}
             </span>
-            <div style={{ display: 'flex', gap: 'var(--space-sm)' }}>
+            <div style={{ display: 'flex', gap: 'var(--space-sm)', flexShrink: 0 }}>
+              {chat.downloadState === 'idle' && chat.updateInfo.releaseNotesUrl && (
+                <a
+                  href={chat.updateInfo.releaseNotesUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{
+                    color: '#fff',
+                    fontSize: 'var(--text-xs)',
+                    textDecoration: 'underline',
+                    alignSelf: 'center',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {t('updateViewReleaseNotes')}
+                </a>
+              )}
               {chat.downloadState === 'complete' ? (
                 <button
                   onClick={() => chat.openDownloadFolder(chat.downloadFolderPath)}

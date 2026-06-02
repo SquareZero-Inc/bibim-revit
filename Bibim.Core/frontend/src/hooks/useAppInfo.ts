@@ -24,6 +24,7 @@ export function useAppInfo() {
         latestVersion?: string;
         downloadUrl?: string;
         releaseNotes?: string;
+        releaseNotesUrl?: string;
       };
       if (info?.version) setAppVersion(info.version);
       if (info?.revitVersion) setRevitVersion(info.revitVersion);
@@ -37,6 +38,7 @@ export function useAppInfo() {
           latestVersion: info.latestVersion ?? '',
           downloadUrl: info.downloadUrl,
           releaseNotes: info.releaseNotes,
+          releaseNotesUrl: info.releaseNotesUrl,
         });
       }
     });

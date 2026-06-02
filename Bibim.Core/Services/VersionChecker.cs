@@ -17,8 +17,21 @@ namespace Bibim.Core
         public string LatestVersion { get; set; }
         public string CurrentVersion { get; set; }
         public string DownloadUrl { get; set; }
+        /// <summary>
+        /// One-line headline extracted from the release body. Capped at
+        /// <see cref="ReleaseNotesHeadlineMaxChars"/>. The full markdown stays
+        /// on the GitHub release page (see <see cref="ReleaseNotesUrl"/>).
+        /// </summary>
         public string ReleaseNotes { get; set; }
+        /// <summary>
+        /// GitHub release page (html_url). Frontend opens this when the user
+        /// clicks "View full release notes" instead of trying to render the
+        /// raw markdown body in the alert bar.
+        /// </summary>
+        public string ReleaseNotesUrl { get; set; }
         public string ErrorMessage { get; set; }
+
+        public const int ReleaseNotesHeadlineMaxChars = 140;
 
         public static VersionCheckResult NoUpdateNeeded => new VersionCheckResult
         {
@@ -113,7 +126,8 @@ namespace Bibim.Core
                     LatestVersion = latestVersion,
                     CurrentVersion = currentVersion,
                     DownloadUrl = downloadUrl,
-                    ReleaseNotes = body
+                    ReleaseNotes = ExtractReleaseHeadline(body),
+                    ReleaseNotesUrl = release["html_url"]?.ToString() ?? ""
                 };
             }
             catch (Exception ex)
@@ -121,6 +135,54 @@ namespace Bibim.Core
                 Logger.Log("VersionChecker", "Version check failed: " + ex.Message);
                 return VersionCheckResult.Error(ex.Message);
             }
+        }
+
+        /// <summary>
+        /// Extract a single-line headline from a GitHub release body. The body is
+        /// full markdown (headers, tables, code fences, ~9KB for a typical BIBIM
+        /// release) — rendering it raw in the alert bar produced a multi-thousand-
+        /// pixel text wall in v1.1.0. We now keep the rich content on the GitHub
+        /// release page (linked separately) and only ship a short headline through
+        /// the bridge.
+        ///
+        /// Heuristic — return the first non-empty line that is not a markdown
+        /// header (#), horizontal rule (---), blockquote-only fence, or pure
+        /// metadata (**Release date**, etc.). Strips obvious markdown decoration.
+        /// Falls back to the bare first 140 chars if no clean line is found.
+        /// </summary>
+        private static string ExtractReleaseHeadline(string body)
+        {
+            if (string.IsNullOrWhiteSpace(body))
+                return "";
+
+            string[] lines = body.Replace("\r\n", "\n").Split('\n');
+            foreach (string raw in lines)
+            {
+                string line = raw.Trim();
+                if (line.Length == 0) continue;
+                if (line.StartsWith("#")) continue;     // markdown headers
+                if (line.StartsWith("---")) continue;   // horizontal rule
+                if (line.StartsWith("==")) continue;
+                if (line.StartsWith("```")) continue;   // code fence
+                if (line.StartsWith("|")) continue;     // table row
+                if (line.StartsWith("**Release date**", StringComparison.OrdinalIgnoreCase)) continue;
+                if (line.StartsWith("**릴리즈일**", StringComparison.Ordinal)) continue; // **릴리즈일**
+
+                // Strip the most common decorations
+                string clean = line.TrimStart('>', ' ', '*', '_', '-', '\t');
+                clean = clean.Replace("**", "").Replace("*", "").Trim();
+                if (clean.Length == 0) continue;
+
+                return clean.Length > VersionCheckResult.ReleaseNotesHeadlineMaxChars
+                    ? clean.Substring(0, VersionCheckResult.ReleaseNotesHeadlineMaxChars) + "..."
+                    : clean;
+            }
+
+            // Fallback — no clean line. Just trim the raw body.
+            string fallback = body.Trim();
+            return fallback.Length > VersionCheckResult.ReleaseNotesHeadlineMaxChars
+                ? fallback.Substring(0, VersionCheckResult.ReleaseNotesHeadlineMaxChars) + "..."
+                : fallback;
         }
 
         public static int CompareVersions(string v1, string v2)

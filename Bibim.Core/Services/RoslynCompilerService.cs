@@ -298,10 +298,23 @@ namespace BibimGenerated
         {
             var refs = new List<MetadataReference>();
 
-            // Core .NET references
+            // Core .NET references. Dedupe by *simple assembly name*, not by file path —
+            // Revit 2027 ships some assemblies (e.g. Autodesk.Http.dll) from two paths
+            // simultaneously: the main install directory AND the new
+            // %ProgramFiles%\Autodesk\Revit 2027\AddIns\ExtendedAPIs\ subfolder. Both
+            // load into the AppDomain. A path-based .Distinct() keeps both, which made
+            // Roslyn reject every compile with CS1704 ("An assembly with the same
+            // simple name has already been imported"). Grouping by simple name and
+            // preferring the non-ExtendedAPIs path resolves the conflict without
+            // affecting Revit 2024-2026, which don't have the ExtendedAPIs folder.
             var trustedAssemblies = AppDomain.CurrentDomain.GetAssemblies()
                 .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location))
-                .Select(a => a.Location)
+                .GroupBy(a => a.GetName().Name)
+                .Select(g => g
+                    .OrderBy(a => a.Location.IndexOf(
+                        "ExtendedAPIs", StringComparison.OrdinalIgnoreCase) >= 0 ? 1 : 0)
+                    .First()
+                    .Location)
                 .Distinct();
 
             foreach (var path in trustedAssemblies)
