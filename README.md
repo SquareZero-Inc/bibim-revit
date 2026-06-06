@@ -62,7 +62,7 @@ Open Revit → BIBIM AI tab → click the gear icon (⚙) → paste each key int
 | GPT-5.5 | `gpt-5.5` | OpenAI | ~$0.06 | Multilingual prompts, strong tool use |
 | Gemini 3.1 Pro | `gemini-3.1-pro-preview` | Google | ~$0.02 | Lowest cost, biggest context window |
 
-Cost estimates updated for v1.0.2 — assume a typical Revit query (~3,500 input tokens after caching + ~1,500 output tokens) on the second call within the 5-minute cache window. First call in a fresh session is ~30% higher; sustained sessions trend lower as cache hit ratio grows. See `bibim_v3_debug.txt` for live measurements.
+Cost estimates updated for v1.0.2 — assume a typical Revit query (~3,500 input tokens after caching + ~1,500 output tokens) on the second call within the 5-minute cache window. First call in a fresh session is ~30% higher; sustained sessions trend lower as cache hit ratio grows. See `%AppData%\BIBIM\logs\bibim_debug.txt` for live measurements.
 
 Models without a registered key are disabled in the picker; the tooltip tells you which key to add.
 
@@ -148,7 +148,7 @@ The Gemini key field in Settings is reserved for **Gemini as an LLM provider** (
 
 BIBIM 1.0.2 cuts input-token usage by **~30–40%** for typical sessions. Anthropic prompt caching is enabled by default — within the 5-minute cache window, the system-prompt + tool-definitions prefix is billed at the cached rate (`$0.30 / 1M`, 90% off the normal `$3 / 1M`). OpenAI has automatic caching above 1024-token prefixes (free), and Gemini exposes `cachedContentTokenCount` when content caching is in use.
 
-Cache effectiveness is logged per call and per session in `bibim_v3_debug.txt`:
+Cache effectiveness is logged per call and per session in `%AppData%\BIBIM\logs\bibim_debug.txt`:
 ```
 [TokenTracker] rid=abc1234 type=chat in=420 out=180 cache_read=2812 cache_create=0
                 session_total_in=8432 session_cache_read=11340 hit_ratio=57.4%
@@ -195,19 +195,19 @@ When something goes wrong, BIBIM writes debug artifacts to two local locations:
 
 | File / Folder | Contents |
 |---|---|
-| `%USERPROFILE%\bibim_v3_debug.txt` | Main log — all events, errors, and stack traces. Rotates at 10 MB (`.bak` kept). |
+| `%AppData%\BIBIM\logs\bibim_debug.txt` | Main log — all events, errors, and stack traces. Rotates at 10 MB (`.bak` kept). |
 | `%AppData%\BIBIM\rag_config.json` | User config file — API keys, selected model, RAG store IDs. |
 | `%AppData%\BIBIM\debug\codegen\YYYYMMDD\` | Per-run artifacts: system prompt, task prompt, raw LLM output, compiled `.cs` files, and compiler diagnostics. Created for every code-generation run. |
 
 **To open quickly (Win+R):**
 ```
-%USERPROFILE%\bibim_v3_debug.txt
+%AppData%\BIBIM\logs\bibim_debug.txt
 %AppData%\BIBIM\rag_config.json
 %AppData%\BIBIM\debug\codegen
 ```
 
 When filing a GitHub issue, please attach:
-1. `bibim_v3_debug.txt` (or the relevant section)
+1. `%AppData%\BIBIM\logs\bibim_debug.txt` (or the relevant section)
 2. The `codegen/YYYYMMDD/...` folder for the failing run (contains the prompt and generated code — **review for sensitive project data before sharing**)
 
 → [Open an issue](https://github.com/SquareZero-Inc/bibim-revit/issues)
