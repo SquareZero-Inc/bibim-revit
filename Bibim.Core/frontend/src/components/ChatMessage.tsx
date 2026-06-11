@@ -90,9 +90,9 @@ export default function ChatMessage({ msg, onUndo, onFeedback, onFeedbackDetail,
               <button
                 onClick={() => onRerun?.(msg.csharpCode!, msg.createdAt)}
                 style={secondaryButtonStyle}
-                title="Run this saved code in a new session"
+                title={t('rerunTooltip')}
               >
-                Rerun
+                {t('rerunTitle')}
               </button>
             )}
 

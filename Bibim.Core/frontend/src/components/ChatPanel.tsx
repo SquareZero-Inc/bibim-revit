@@ -77,7 +77,9 @@ export default function ChatPanel({
             <div style={{
               fontSize: 'var(--text-sm)',
               color: 'var(--color-text-muted)',
-              textAlign: 'center', maxWidth: 320,
+              textAlign: 'left', maxWidth: 340,
+              whiteSpace: 'pre-line',
+              lineHeight: 1.6,
             }}>
               {t('welcomeBody')}
             </div>

@@ -13,7 +13,7 @@ const STRINGS = {
     noSessions: '세션 없음',
     untitled: '제목 없음',
     messages: 'msgs',
-    welcomeBody: 'Revit 작업을 자연어로 요청하세요. C# 코드를 생성하고 실행합니다.',
+    welcomeBody: 'Revit 작업을 자연어로 요청하세요. C# 코드를 생성하고 실행합니다.\n\n예시:\n• "현재 뷰의 벽 개수를 타입별로 정리해줘"\n• "L2의 모든 문 너비를 1200mm로 일괄 변경"\n• "모든 룸의 번호·이름·면적을 엑셀로 추출"\n\n💡 레벨·시트·패밀리는 프로젝트의 실제 이름으로 입력하면 더 정확합니다.\n🔄 새 대화 시작: 좌측 상단 Menu → 새 세션',
     inputPlaceholder: '메시지를 입력하세요... (@로 컨텍스트 추가)',
     stop: '중단',
     send: '전송',
@@ -203,6 +203,16 @@ const STRINGS = {
     modelLockedTooltipOpenAI: 'OpenAI 키를 먼저 등록하세요',
     modelLockedTooltipGemini: 'Google Gemini 키를 먼저 등록하세요',
     modelLockedTooltipLocal: '로컬 LLM 서버 URL을 먼저 등록하세요',
+    // Rerun modal
+    rerunTitle: '코드 다시 실행',
+    rerunSource: '원본: ',
+    rerunWarning: '이 코드는 이전 모델 상태 기준으로 생성되었습니다. 실행 전 검토·수정하세요.',
+    rerunRunButton: '새 세션에서 실행',
+    rerunCancel: '취소',
+    rerunTooltip: '저장된 코드를 새 세션에서 실행',
+    // Code detail modal
+    taskKindRead: '조회',
+    taskKindWrite: '수정',
     // Feedback
     reportBug: '버그 신고',
     suggestFeature: '기능 제안',
@@ -216,7 +226,7 @@ const STRINGS = {
     noSessions: 'No sessions',
     untitled: 'Untitled',
     messages: 'msgs',
-    welcomeBody: 'Describe the Revit task in natural language. BIBIM will generate and execute C# code.',
+    welcomeBody: 'Describe the Revit task in natural language. BIBIM generates and executes C# code.\n\nExamples:\n• "Count walls in the active view, grouped by type"\n• "Set all door widths on L2 to 1200mm"\n• "Export every room\'s number, name and area to Excel"\n\n💡 Use the exact level / sheet / family names from your project for best results.\n🔄 New conversation: Menu (top-left) → New session',
     inputPlaceholder: 'Type a message... (@ adds Revit context)',
     stop: 'Stop',
     send: 'Send',
@@ -406,6 +416,16 @@ const STRINGS = {
     modelLockedTooltipOpenAI: 'Add OpenAI key above to enable',
     modelLockedTooltipGemini: 'Add Google Gemini key above to enable',
     modelLockedTooltipLocal: 'Configure Local LLM server URL above first',
+    // Rerun modal
+    rerunTitle: 'Rerun Code',
+    rerunSource: 'Source: ',
+    rerunWarning: 'This code was generated for an earlier Revit model state. Review and adjust it before running.',
+    rerunRunButton: 'Run In New Session',
+    rerunCancel: 'Cancel',
+    rerunTooltip: 'Run this saved code in a new session',
+    // Code detail modal
+    taskKindRead: 'Read',
+    taskKindWrite: 'Write',
     // Feedback
     reportBug: 'Report a Bug',
     suggestFeature: 'Suggest a Feature',

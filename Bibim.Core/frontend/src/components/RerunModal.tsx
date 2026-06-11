@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from 'react';
-import { formatDateTime } from '../i18n';
+import { formatDateTime, t } from '../i18n';
 
 interface Props {
   open: boolean;
@@ -30,14 +30,14 @@ export default function RerunModal({
     <div style={overlayStyle}>
       <div style={modalStyle}>
         <div style={{ marginBottom: 'var(--space-md)' }}>
-          <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>Rerun Code</div>
+          <div style={{ fontSize: 'var(--text-sm)', fontWeight: 600 }}>{t('rerunTitle')}</div>
           <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', marginTop: 4 }}>
-            Source: {sourceTitle} {sourceCreatedAt ? `| ${formatDateTime(sourceCreatedAt)}` : ''}
+            {t('rerunSource')}{sourceTitle}{sourceCreatedAt ? ` | ${formatDateTime(sourceCreatedAt)}` : ''}
           </div>
         </div>
 
         <div style={warningStyle}>
-          This code was generated for an earlier Revit model state. Review and adjust it before running.
+          {t('rerunWarning')}
         </div>
 
         <textarea
@@ -47,8 +47,8 @@ export default function RerunModal({
         />
 
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 'var(--space-sm)', marginTop: 'var(--space-md)' }}>
-          <button onClick={onClose} style={cancelBtnStyle}>Cancel</button>
-          <button onClick={() => onConfirm(code)} style={confirmBtnStyle}>Run In New Session</button>
+          <button onClick={onClose} style={cancelBtnStyle}>{t('rerunCancel')}</button>
+          <button onClick={() => onConfirm(code)} style={confirmBtnStyle}>{t('rerunRunButton')}</button>
         </div>
       </div>
     </div>

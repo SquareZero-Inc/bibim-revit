@@ -46,7 +46,7 @@ export default function CodeDetailModal({ snippet, onRun, onEdit, onDelete, onCl
             <div style={titleStyle}>{snippet.title || '—'}</div>
             <div style={metaStyle}>
               {formatDateTime(snippet.createdAt)} · Revit {snippet.revitVersion || '—'} ·{' '}
-              {snippet.taskKind === 'read' ? 'Read' : 'Write'}
+              {snippet.taskKind === 'read' ? t('taskKindRead') : t('taskKindWrite')}
             </div>
           </div>
           <button onClick={onClose} style={closeBtnStyle}>✕</button>

@@ -1283,7 +1283,13 @@ Question rules:
                 "export", "출력", "내보내", "내보내기", "이동", "옮겨",
                 "복사", "복제", "회전", "rename", "rename",
                 "create", "make", "place", "add", "modify", "edit", "build",
-                "delete", "remove", "move", "copy", "rotate");
+                "delete", "remove", "move", "copy", "rotate",
+                // Graphic override / visibility verbs — these route to code-gen,
+                // NOT the model-summary branch. "색상 강조" / "하이라이트" / "hide" etc.
+                // NB: "표시" / "보여" intentionally excluded — they appear in READ
+                //     requests ("현재 뷰 정보 표시해줘") and would block those.
+                "강조", "하이라이트", "색상", "칠해", "칠하", "재지정", "격리", "숨기", "숨겨",
+                "override", "highlight", "color", "colour", "paint", "graphic", "isolate", "hide");
 
             return mentionsCurrentContext && asksForDescription && !mentionsWriteAction;
         }
