@@ -114,6 +114,25 @@ export default function CurrentTaskPanel({
         <button onClick={() => setShowTaskList((prev) => !prev)} style={ghostButtonStyle}>
           {showTaskList ? t('hideTaskList') : t('taskList')}
         </button>
+        {/* U-6: Primary action button always visible in header, even when panel is collapsed */}
+        {task?.stage === 'review' && (
+          <button
+            onClick={onConfirm}
+            disabled={isBusy}
+            style={{ ...primaryButtonStyle, fontSize: 'var(--text-xs)', padding: '3px 10px', opacity: isBusy ? 0.6 : 1, cursor: isBusy ? 'not-allowed' : 'pointer' }}
+          >
+            {isBusy ? '⋯' : t('confirmTask')}
+          </button>
+        )}
+        {task?.stage === 'preview_ready' && task.requiresApply && (
+          <button
+            onClick={onApply}
+            disabled={isBusy}
+            style={{ ...primaryButtonStyle, fontSize: 'var(--text-xs)', padding: '3px 10px', opacity: isBusy ? 0.6 : 1, cursor: isBusy ? 'not-allowed' : 'pointer' }}
+          >
+            {isBusy ? t('applying') : t('applyChanges')}
+          </button>
+        )}
         {task && (
           <button onClick={() => setExpanded((prev) => !prev)} style={ghostButtonStyle}>
             {expanded ? t('collapse') : t('details')}
@@ -186,7 +205,19 @@ export default function CurrentTaskPanel({
           )}
 
           {task.resultSummary && (
-            <div style={hintStyle}>{task.resultSummary}</div>
+            <div style={{
+              fontSize: 'var(--text-sm)',
+              color: (task.stage === 'completed' && !task.hasError)
+                ? 'var(--color-success)'
+                : task.stage === 'completed' && task.hasError
+                ? 'var(--color-error)'
+                : 'var(--color-text-secondary)',
+              lineHeight: 1.6,
+              whiteSpace: 'pre-wrap',
+              fontWeight: (task.stage === 'completed') ? 600 : 400,
+            }}>
+              {task.resultSummary}
+            </div>
           )}
 
           <div style={{

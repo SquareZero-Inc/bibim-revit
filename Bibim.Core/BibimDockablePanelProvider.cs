@@ -1800,13 +1800,13 @@ Constraints:
             });
 
             // --- question_answers: structured Q&A from Question Card UI ---
-            RegisterAsyncHandler("question_answers", payload =>
+            RegisterAsyncHandler("question_answers", async payload =>
             {
                 var answers = payload["answers"] as Newtonsoft.Json.Linq.JArray;
                 Logger.Log("BridgeHandler", $"question_answers: {answers?.Count ?? 0} answers");
 
                 var task = GetActiveTask();
-                if (task == null || answers == null) return Task.CompletedTask;
+                if (task == null || answers == null) return;
 
                 foreach (var answerObj in answers)
                 {
@@ -1841,25 +1841,35 @@ Constraints:
                             "모든 질문을 건너뛰었습니다. BIBIM이 기본값으로 진행하지만, 원하는 결과와 다를 수 있습니다."));
                 }
 
+                // Store Q&A in internal history for planner context (sliding window),
+                // but do NOT echo it back to the chat panel as a user bubble.
+                // Displaying "Q: ... A: ..." as if the user typed it is confusing —
+                // the user answered via card UI, not by typing. The task panel's
+                // summary already shows the collected answers.
                 lock (_chatHistoryLock) _chatHistory.Add(new ChatMessage { Text = qaText, IsUser = true });
                 _sessionManager?.AddMessage(_activeSessionId, "user", "text", qaText);
 
                 task.Questions = new List<QuestionItem>();
-                task.Stage = TaskStages.Review;
-                UpsertTask(task, autoOpen: true);
                 SendSessionList();
 
-                _bridge.PostMessage("streaming_end", new
+                // F-2: After Q&A the task has all details — skip the manual "작업 확인"
+                // gate for WRITE tasks (preview is non-destructive; the real safety gate
+                // is "실제 적용"). Broad-read review tasks still pause for scope confirmation.
+                if (task.Kind == TaskKinds.Write && !IsBuiltInCurrentContextSummaryTaskV2(task))
                 {
-                    text = qaText,
-                    type = "normal",
-                    isUser = true,
-                    inputTokens = 0,
-                    outputTokens = 0,
-                    elapsedMs = 0
-                });
+                    task.Stage = TaskStages.Working;
+                    UpsertTask(task, autoOpen: true);
+                    _bridge.PostMessage("system_message",
+                        UiText("Details collected. Generating code and running a preview...",
+                               "정보 수집 완료. 코드를 생성하고 미리 검증합니다..."));
+                    await GenerateCodeFromTaskAsync(task, runAfterGeneration: true);
+                }
+                else
+                {
+                    task.Stage = TaskStages.Review;
+                    UpsertTask(task, autoOpen: true);
+                }
 
-                return Task.CompletedTask;
             });
 
             RegisterAsyncHandler("task_action", async payload =>
@@ -2010,7 +2020,11 @@ Constraints:
                         feedbackEnabled: false,
                         feedbackState: action?.FeedbackState);
 
-                    if (action != null)
+                    // F-4: Suppress the active feedback bubble on success — the 👍/👎
+                    // icons are already attached to the message via feedbackEnabled on
+                    // the message itself. Active prompting on every success interrupts
+                    // flow; reserve it for failures where the user needs a recovery path.
+                    if (action != null && !execResult.Success)
                         _bridge.PostMessage("feedback_request", new { actionId = action.ActionId, taskId = action.TaskId });
 
                     // If Revit warnings fired during commit, prompt user to re-generate
@@ -3296,12 +3310,15 @@ Constraints:
         {
             if (string.Equals(plan.TaskRelation, "ask", StringComparison.OrdinalIgnoreCase))
             {
-                string askText = string.IsNullOrWhiteSpace(plan.AssistantMessage)
-                    ? UiText("Should I update the current task or start a new one?",
-                        "현재 작업에 반영할까요, 새 작업으로 시작할까요?")
-                    : plan.AssistantMessage;
-                SendAssistantMessage(askText, "question", messageType: "question");
-                return;
+                // F-5: Instead of blocking the user with a meta-question ("update or new?"),
+                // treat ambiguous intent as a new task and notify inline.
+                // The user can always say "이전 작업에 추가해줘" to redirect.
+                string noticeText = UiText(
+                    "Starting as a new task — say \"add to the previous task\" if you meant to continue it.",
+                    "새 작업으로 진행합니다 — 이전 작업에 이어붙이려면 \"이전 작업에 추가해줘\"라고 말씀해주세요.");
+                _bridge.PostMessage("system_message", noticeText);
+                plan.TaskRelation = "new";
+                // Fall through to new-task handling below.
             }
 
             var activeTask = GetActiveTask();
