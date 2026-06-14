@@ -970,10 +970,43 @@ JSON schema:
 }}
 
 Question rules:
-- Each question MUST have 2-5 concrete options the user can click.
+- Provide 2-5 clickable options ONLY when you can enumerate real or sensible values
+  (from [MODEL CONTEXT], or universal choices like skip/overwrite/all).
+  If you cannot honestly enumerate options (e.g. a free-form path or custom name),
+  return an empty options array — the UI shows a free-text input instead.
 - Use ""single"" when only one answer makes sense, ""multi"" when multiple can apply.
 - Options should be short, clear labels (not full sentences).
 - The user can also type a custom answer, so options don't need to cover every case.
+
+IDENTIFIER RESOLUTION (CRITICAL):
+A [MODEL CONTEXT] block above lists the ACTUAL level/sheet/phase/workset names in
+this project. When the user refers to a floor, level, or sheet loosely
+(e.g. ""2층"", ""지하"", ""1F"", ""the third floor"", ""A1 sheets""):
+1. Match it against [MODEL CONTEXT] silently.
+   - Exactly ONE plausible match -> use that real name. DO NOT ask. Include the
+     mapping in the task summary in the user's UI language:
+     Korean: 해석: '2층' → 'L2'   |   English: Interpreted: '2nd floor' → 'L2'
+   - MULTIPLE plausible matches -> ask ONE question whose options are EXACTLY those
+     real names copied verbatim from [MODEL CONTEXT] (plus ""모두""/""All"" if applicable).
+   - ZERO matches -> ask, listing the real names from [MODEL CONTEXT] as options.
+2. NEVER invent identifier options. If [MODEL CONTEXT] is absent, ask a free-text
+   question (empty options array) instead of fabricating options.
+3. LANGUAGE: all user-facing text (questions, summaries, mapping line) MUST be in
+   the user's UI language. [MODEL CONTEXT] itself is always English (internal only).
+
+EXPLICIT-INFO RULE (CRITICAL):
+Before generating questions, extract everything the user already stated: values with
+units (1200mm), target scope, processing order (""개수 먼저 알려주고 확인 후 적용""),
+output format (Excel). NEVER re-ask anything already stated.
+No ""just to confirm"" questions. Ask ONLY about genuinely missing or conflicting info.
+
+INTENT-PRIORITY RULE:
+The PRIMARY VERB determines the task category. The mere presence of a noun like
+""파라미터/parameter"" NEVER makes this a parameter-creation task.
+- 추출/내보내/출력/export/excel/csv -> data EXPORT task (read + file output)
+- 알려줘/보여줘/list/count/몇 개 -> read/query task
+- 변경/수정/일괄/set/change -> modify EXISTING parameter values
+- Parameter-creation ONLY on: 파라미터 만들/생성/정의/추가, create/add/define a new parameter
 
 {categoryChecklist}";
         }
@@ -1017,6 +1050,29 @@ Question rules:
                 ? resolvedText
                 : "(none)";
 
+            // Probe actual project identifiers (levels, sheets, phases, worksets)
+            // so the planner can resolve loose references ("2층", "A1 시트") without
+            // asking. RevitContextProvider + FilteredElementCollector require the
+            // Revit/WPF main thread — dispatch synchronously with a short timeout.
+            // Returns empty string on failure (non-fatal; planner still works, just
+            // without the identifier block).
+            string identifierBlock = string.Empty;
+            try
+            {
+                EnsureContextProvider();
+                if (_contextProvider != null && System.Windows.Application.Current != null)
+                {
+                    var provider = _contextProvider;
+                    identifierBlock = System.Windows.Application.Current.Dispatcher
+                        .Invoke(() => ModelIdentifierProbe.BuildContextBlock(provider),
+                                System.Windows.Threading.DispatcherPriority.Background);
+                }
+            }
+            catch (Exception probeEx)
+            {
+                Logger.Log("IdentifierProbe", $"Skipped in planner: {probeEx.Message}");
+            }
+
             return $@"[LATEST USER MESSAGE]
 {userText}
 
@@ -1031,7 +1087,7 @@ Question rules:
 
 [RECENT CONVERSATION]
 {string.Join(Environment.NewLine, recentHistory)}
-
+{(string.IsNullOrEmpty(identifierBlock) ? "" : $"\n{identifierBlock}")}
 [Output format: respond with JSON only — no markdown, no commentary.]";
         }
 
@@ -1465,7 +1521,8 @@ Constraints:
 - If a previous execution failed, analyze the error and generate code that avoids the same failure.
 - Return ONLY a ```csharp``` block containing statements for the body of Execute(UIApplication uiApp, Bibim.Core.BibimExecutionContext ctx).
 - Use ctx.Log(""message"") to record intermediate progress (e.g. element counts, decisions, skipped items). These appear in the BIBIM panel after execution.
-- Do NOT include using directives, namespace, class, method signature, markdown outside the code block, or explanation text.{commentLangRule}";
+- Do NOT include using directives, namespace, class, method signature, markdown outside the code block, or explanation text.
+- All clarifications were collected before this request. Do NOT ask questions or add text outside the code block.{commentLangRule}";
         }
 
         private ApiInspectionReport InspectGeneratedCode(string sourceCode, ExecutionResult dryRunResult = null)

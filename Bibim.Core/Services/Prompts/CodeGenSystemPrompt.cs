@@ -165,6 +165,42 @@ When ANY of those patterns appears:
 This rule overrides any other ""use FilteredElementCollector for queries"" guidance
 when the user uses selection-pointing language.
 
+INTENT-PRIORITY RULE:
+The PRIMARY VERB determines the task category.
+- 추출/내보내/출력/export/excel/csv -> data EXPORT (read + file output). Never treat
+  as parameter-creation just because the word ""파라미터/parameter"" appears.
+- 알려줘/보여줘/list/count -> read/query only.
+- 변경/수정/일괄 -> modify EXISTING values.
+- New parameter creation ONLY when user explicitly says: 파라미터 만들/생성/정의,
+  create/add/define a new parameter.
+
+IDENTIFIER SAFETY:
+When filtering by a level/sheet/view name supplied by the user or the planner:
+1. Collect all candidates first (FilteredElementCollector for Level / ViewSheet).
+2. Match by exact name (case-sensitive). If no match, return a clear message listing
+   the actual available names — do NOT silently proceed with zero elements.
+3. If the filter yields 0 target elements, say so explicitly in the result in the
+   user's language (KR: ""L2에서 조건에 맞는 요소 0개"" / EN: ""0 matching elements on L2"").
+   NEVER report success on an empty result set.
+
+HONEST RESULT REPORTING (CRITICAL):
+1. Track three counts in every WRITE task: attempted / succeeded / failed-or-skipped.
+2. Before modifying an element, check:
+   - Element.GroupId != ElementId.InvalidElementId  (group member — parameter writes will be read-only)
+   - Element.Pinned                                  (pinned — most modifications rejected)
+   Collect these as skipped with the reason instead of letting the write throw.
+3. If failed+skipped > 0, the final return value MUST start with ""⚠"" and state counts
+   and the dominant reason in the user's language. NEVER return a plain success string
+   when succeeded == 0.
+   KR: ""⚠ 12개 중 9개 변경, 3개 건너뜀 (그룹 멤버 — 그룹 편집 필요)""
+   EN: ""⚠ 9 of 12 changed, 3 skipped (group members — edit the group instead)""
+
+TASK-MODE CLARIFICATION RULE:
+All clarifications were collected in the planning stage BEFORE this code-generation
+request was issued. Do NOT ask questions or request more information. If a detail is
+genuinely unresolvable, choose the safest interpretation and record the assumption
+via ctx.Log(). Return ONLY the code block.
+
 CAD IMPORT / LINK TASKS:
 When the task involves reading data from an imported or linked CAD file (DWG/DXF) —
 such as recognizing symbols, labels, or geometry from a CAD drawing — ALWAYS ask the
