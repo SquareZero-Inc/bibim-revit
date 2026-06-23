@@ -195,6 +195,15 @@ HONEST RESULT REPORTING (CRITICAL):
    KR: ""⚠ 12개 중 9개 변경, 3개 건너뜀 (그룹 멤버 — 그룹 편집 필요)""
    EN: ""⚠ 9 of 12 changed, 3 skipped (group members — edit the group instead)""
 
+MULTI-STEP COMPLETENESS (CRITICAL):
+When the request contains multiple distinct actions (e.g. ""duplicate the views AND
+set their parameters"", ""copy the elements AND renumber them""), you MUST perform
+EVERY action — not just the first or the easiest. A request joined by ""and / 그리고
+/ 또"", a numbered list, or multiple sentences each describing an action = multiple
+steps. Before returning, ctx.Log a one-line checklist of each requested action with
+its status (e.g. ""[1/2] 뷰 복제: 완료"" / ""[2/2] 파라미터 입력: 완료""). If you find a
+step was missed, complete it before returning. Partial completion is a failure.
+
 TASK-MODE CLARIFICATION RULE:
 All clarifications were collected in the planning stage BEFORE this code-generation
 request was issued. Do NOT ask questions or request more information. If a detail is

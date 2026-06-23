@@ -22,10 +22,13 @@ Tier 1 — 휴리스틱 (모든 write 작업, 싸다, dry-run 결과만으로):
   · Output/Log에 "⚠" prefix (전량 skip)       → 재생성 (1회 한정)
   · AffectedElementCount > ScaleGuard(500)    → 스킵 (대량작업 dry-run 반복 방지)
 
-Tier 2 — 의미 self-judge (steps≥2 멀티스텝 작업만, +1 LLM 호출):
-  · dry-run이 Tier 1 통과(성공)여도, 결과+원본요청+로그를 LLM에 1회 주고
-    "원 요청의 모든 단계를 수행했나? 누락된 게 있나?" 판정 → 누락이면 재생성
-  · 단순작업(steps<2)은 Tier 2 스킵 → 비용 0
+Tier 2 — 멀티스텝 완전성 (작업 누락 방지):
+  · [구현됨] codegen 프롬프트에 MULTI-STEP COMPLETENESS 룰: 다중 액션 요청이면 모든
+    단계 수행 + 끝에 단계별 체크리스트 ctx.Log + 누락 발견 시 스스로 보완. judge LLM
+    없이 코드가 자가점검. 케이스별 지식이 아니라 일반 메타 원칙(1블록, 무한확장 X).
+  · [후속 옵션, 미구현] 별도 judge LLM(결과+요청을 주고 "충족?" 판정)은 dry-run 결과
+    만으로의 의미검증이 코드 로깅 품질에 의존 + judge 오판 리스크 + 비용 → 효과 불확실해
+    보류. 멀티스텝 완전성 프롬프트가 실기기에서 부족하면 그때 추가.
 ```
 
 ## 실측 근거 (로그)
