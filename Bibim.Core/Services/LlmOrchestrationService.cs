@@ -394,7 +394,11 @@ namespace Bibim.Core
                             // regenerate — same mechanism as the compile-error loop above.
                             // Bounded by maxRuntimeRetries so it can never loop forever,
                             // and still inside the outer maxTurns budget.
-                            if (dryRunValidator != null && runtimeRetries < maxRuntimeRetries)
+                            // Validator runs on EVERY successful compile (so the captured
+                            // dry-run always matches the FINAL code, letting the caller
+                            // reuse it as the preview instead of running dry-run twice).
+                            // Only the *regeneration* is bounded by maxRuntimeRetries.
+                            if (dryRunValidator != null)
                             {
                                 OnStatusUpdate?.Invoke("Validating (preview)...");
                                 DryRunOutcome outcome = null;
@@ -410,7 +414,8 @@ namespace Bibim.Core
                                     Logger.LogError("LlmOrchestration.dryRunValidator", vex);
                                 }
 
-                                if (outcome != null && outcome.ShouldRegenerate)
+                                if (outcome != null && outcome.ShouldRegenerate
+                                    && runtimeRetries < maxRuntimeRetries)
                                 {
                                     runtimeRetries++;
                                     Logger.Log("LlmOrchestration",

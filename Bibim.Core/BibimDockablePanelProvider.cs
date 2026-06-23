@@ -3657,11 +3657,37 @@ Constraints:
                     task?.SourceUserMessage ?? "",
                     taskPrompt ?? "");
 
+                // ── Runtime self-correction (안 A+) ──
+                // For WRITE tasks that will preview, wire a validator that runs the
+                // dry-run inside the codegen loop. The dry-run ExecutionResult is
+                // captured here (closure) so the preview step below can REUSE it
+                // instead of running dry-run a second time (critical for large tasks
+                // whose dry-run takes minutes). The validator stays out of
+                // LlmOrchestrationService — it only returns a DryRunOutcome.
+                var scCfg = ConfigService.GetRagConfig();
+                bool scEnabled = scCfg?.SelfCorrectionEnabled ?? true;
+                int scMaxRetries = scCfg?.SelfCorrectionMaxRetries ?? 1;
+                int scScaleGuard = scCfg?.SelfCorrectionScaleGuard ?? 500;
+                ExecutionResult capturedDryRun = null;
+
+                Func<CompilationResult, CancellationToken, Task<DryRunOutcome>> runtimeValidator = null;
+                if (scEnabled && task.Kind == TaskKinds.Write && runAfterGeneration)
+                {
+                    runtimeValidator = async (compResult, vct) =>
+                    {
+                        var exec = await ExecuteCompilationAsync(compResult, isDryRun: true, task);
+                        capturedDryRun = exec;   // reused as the preview below
+                        return JudgeRuntimeResult(exec, scScaleGuard);
+                    };
+                }
+
                 var agentResult = await llm.GenerateWithToolsAsync(
                     generationHistory, systemPrompt,
                     BibimToolService.GetToolDefinitions(toolHint),
                     CreateToolService().ExecuteAsync,
-                    maxTurns: 15, debugDirectory, ct);
+                    maxTurns: 15, debugDirectory, ct,
+                    dryRunValidator: runtimeValidator,
+                    maxRuntimeRetries: scEnabled ? scMaxRetries : 0);
 
                 _lastCodeGenResult = agentResult;
 
@@ -3761,7 +3787,11 @@ Constraints:
 
                 if (runAfterGeneration)
                 {
-                    var previewResult = await ExecuteCompiledCodeAsync(isDryRun: true);
+                    // Reuse the dry-run the self-correction validator already ran on
+                    // the FINAL code (avoids a duplicate dry-run, which matters when a
+                    // single dry-run takes minutes). Falls back to a fresh dry-run when
+                    // self-correction was disabled / not wired for this task.
+                    var previewResult = capturedDryRun ?? await ExecuteCompiledCodeAsync(isDryRun: true);
                     var report = InspectGeneratedCode(codeToCompile, previewResult);
                     BindTaskToExecutedDocument(task, previewResult);
 
@@ -3828,9 +3858,72 @@ Constraints:
         }
 
         /// <summary>
+        /// Judge a dry-run ExecutionResult for runtime self-correction (안 A+).
+        /// Phase 2 scope: only a runtime exception (Success==false) triggers
+        /// regeneration. Large tasks (affected > scaleGuard) are skipped because a
+        /// repeated dry-run would be too costly. 0-element / all-skipped detection
+        /// (Tier 1) and multi-step semantic judging (Tier 2) are added in later phases.
+        /// </summary>
+        private DryRunOutcome JudgeRuntimeResult(ExecutionResult exec, int scaleGuard)
+        {
+            if (exec == null)
+                return new DryRunOutcome { Ran = false, ShouldRegenerate = false };
+
+            // Scale guard — a dry-run on a huge element set can take minutes; don't
+            // pay that twice. Let the user judge the preview instead.
+            if (exec.AffectedElementCount > scaleGuard)
+            {
+                Logger.Log("SelfCorrection",
+                    $"scale guard hit (affected={exec.AffectedElementCount} > {scaleGuard}); skipping self-correction");
+                return new DryRunOutcome { Ran = true, ShouldRegenerate = false };
+            }
+
+            // Phase 2: runtime exception only.
+            if (!exec.Success)
+            {
+                return new DryRunOutcome
+                {
+                    Ran = true,
+                    ShouldRegenerate = true,
+                    FeedbackText = BuildRuntimeFeedback(exec)
+                };
+            }
+
+            return new DryRunOutcome { Ran = true, ShouldRegenerate = false };
+        }
+
+        /// <summary>
+        /// Build the runtime-validation feedback handed back to the model when a
+        /// dry-run reveals a problem. Deliberately minimal — the actual error / log
+        /// IS the teacher (that's the whole point of self-correction); we don't pile
+        /// on case-specific Revit lore here.
+        /// </summary>
+        private string BuildRuntimeFeedback(ExecutionResult exec)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("[RUNTIME VALIDATION] Your code compiled and ran as a dry-run preview (changes rolled back).");
+            sb.AppendLine("Result:");
+            sb.AppendLine($"- Status: {(exec.Success ? "Success" : "FAILED")}");
+            if (!string.IsNullOrWhiteSpace(exec.ErrorMessage))
+                sb.AppendLine($"- Runtime error: {Truncate(exec.ErrorMessage, 600)}");
+            sb.AppendLine($"- Affected elements: {exec.AffectedElementCount}");
+            if (exec.HasExecutionLogs)
+            {
+                sb.AppendLine("- Execution log:");
+                sb.AppendLine(Truncate(string.Join("\n", exec.ExecutionLogs), 2000));
+            }
+            sb.AppendLine();
+            sb.AppendLine("Diagnose the ROOT CAUSE from the error/log above and regenerate the code. " +
+                "Use tools (get_element_parameters, get_project_levels, search_revit_api) to verify " +
+                "assumptions instead of guessing. If you are certain the result is actually correct, " +
+                "return the same code unchanged.");
+            return sb.ToString();
+        }
+
+        /// <summary>
         /// Generate code from the confirmed spec using the agent loop.
         /// Stores the result for later execute (dryrun/commit).
-        /// 
+        ///
         /// Integrates:
         ///   - CodeGenSystemPrompt.Build(revitVersion, isCodeGeneration: true)
         ///   - GenerateWithToolsAsync (Claude Tool Use loop with auto-compile)
