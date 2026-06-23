@@ -3858,11 +3858,13 @@ Constraints:
         }
 
         /// <summary>
-        /// Judge a dry-run ExecutionResult for runtime self-correction (안 A+).
-        /// Phase 2 scope: only a runtime exception (Success==false) triggers
-        /// regeneration. Large tasks (affected > scaleGuard) are skipped because a
-        /// repeated dry-run would be too costly. 0-element / all-skipped detection
-        /// (Tier 1) and multi-step semantic judging (Tier 2) are added in later phases.
+        /// Judge a dry-run ExecutionResult for runtime self-correction (안 A+) — Tier 1.
+        /// Triggers regeneration on a runtime exception OR a 0-element result (a WRITE
+        /// task that changed nothing — filter matched nothing, or every write was
+        /// rejected as read-only). Large tasks (affected > scaleGuard) are skipped
+        /// because a repeated dry-run would cost minutes. Bounded to maxRetries=1
+        /// upstream, so a genuinely-empty result wastes at most one retry.
+        /// (Tier 2 multi-step semantic judging is added in Phase 4.)
         /// </summary>
         private DryRunOutcome JudgeRuntimeResult(ExecutionResult exec, int scaleGuard)
         {
@@ -3870,7 +3872,8 @@ Constraints:
                 return new DryRunOutcome { Ran = false, ShouldRegenerate = false };
 
             // Scale guard — a dry-run on a huge element set can take minutes; don't
-            // pay that twice. Let the user judge the preview instead.
+            // pay that twice. Let the user judge the preview instead. (Checked first
+            // so a large successful task never trips the 0-element branch.)
             if (exec.AffectedElementCount > scaleGuard)
             {
                 Logger.Log("SelfCorrection",
@@ -3878,14 +3881,29 @@ Constraints:
                 return new DryRunOutcome { Ran = true, ShouldRegenerate = false };
             }
 
-            // Phase 2: runtime exception only.
+            // Runtime exception — the clearest failure signal.
             if (!exec.Success)
             {
                 return new DryRunOutcome
                 {
                     Ran = true,
                     ShouldRegenerate = true,
-                    FeedbackText = BuildRuntimeFeedback(exec)
+                    FeedbackText = BuildRuntimeFeedback(exec, "a runtime exception occurred")
+                };
+            }
+
+            // 0 elements affected — a WRITE task that changed nothing. Usually a bad
+            // filter (wrong name / category) or every write rejected (read-only /
+            // type-level parameter). May genuinely be 0; bounded retry absorbs that.
+            if (exec.AffectedElementCount == 0)
+            {
+                return new DryRunOutcome
+                {
+                    Ran = true,
+                    ShouldRegenerate = true,
+                    FeedbackText = BuildRuntimeFeedback(exec,
+                        "0 elements were affected — the filter likely matched nothing, " +
+                        "or every write was rejected (e.g. a read-only / type-level parameter)")
                 };
             }
 
@@ -3896,9 +3914,10 @@ Constraints:
         /// Build the runtime-validation feedback handed back to the model when a
         /// dry-run reveals a problem. Deliberately minimal — the actual error / log
         /// IS the teacher (that's the whole point of self-correction); we don't pile
-        /// on case-specific Revit lore here.
+        /// on case-specific Revit lore here. <paramref name="reason"/> names the
+        /// detected problem so the model knows what to fix.
         /// </summary>
-        private string BuildRuntimeFeedback(ExecutionResult exec)
+        private string BuildRuntimeFeedback(ExecutionResult exec, string reason)
         {
             var sb = new System.Text.StringBuilder();
             sb.AppendLine("[RUNTIME VALIDATION] Your code compiled and ran as a dry-run preview (changes rolled back).");
@@ -3913,10 +3932,11 @@ Constraints:
                 sb.AppendLine(Truncate(string.Join("\n", exec.ExecutionLogs), 2000));
             }
             sb.AppendLine();
+            sb.AppendLine($"This looks wrong: {reason}.");
             sb.AppendLine("Diagnose the ROOT CAUSE from the error/log above and regenerate the code. " +
                 "Use tools (get_element_parameters, get_project_levels, search_revit_api) to verify " +
-                "assumptions instead of guessing. If you are certain the result is actually correct, " +
-                "return the same code unchanged.");
+                "assumptions instead of guessing. If you are CERTAIN the result is actually correct " +
+                "(e.g. there genuinely are 0 matching elements), return the same code unchanged.");
             return sb.ToString();
         }
 
