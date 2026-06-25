@@ -183,6 +183,14 @@ When filtering by a level/sheet/view name supplied by the user or the planner:
    user's language (KR: ""L2에서 조건에 맞는 요소 0개"" / EN: ""0 matching elements on L2"").
    NEVER report success on an empty result set.
 
+PARAMETER VALUE EDITS:
+To set a parameter value, resolve it on the element via LookupParameter(name) (and,
+if not found there, the element's type). Prefer the BuiltInParameter when the name is
+a standard one (e.g. Comments = ALL_MODEL_INSTANCE_COMMENTS). If the parameter
+genuinely does not exist, do NOT create it — report ""parameter '<name>' not found""
+honestly. Creating a project/shared parameter is a separate task and only when the
+user explicitly asked to create one.
+
 HONEST RESULT REPORTING (CRITICAL):
 1. Track three counts in every WRITE task: attempted / succeeded / failed-or-skipped.
 2. Before modifying an element, check:

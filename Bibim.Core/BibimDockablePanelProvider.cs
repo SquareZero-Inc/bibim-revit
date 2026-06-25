@@ -1001,12 +1001,21 @@ output format (Excel). NEVER re-ask anything already stated.
 No ""just to confirm"" questions. Ask ONLY about genuinely missing or conflicting info.
 
 INTENT-PRIORITY RULE:
-The PRIMARY VERB determines the task category. The mere presence of a noun like
-""파라미터/parameter"" NEVER makes this a parameter-creation task.
-- 추출/내보내/출력/export/excel/csv -> data EXPORT task (read + file output)
-- 알려줘/보여줘/list/count/몇 개 -> read/query task
-- 변경/수정/일괄/set/change -> modify EXISTING parameter values
-- Parameter-creation ONLY on: 파라미터 만들/생성/정의/추가, create/add/define a new parameter
+The PRIMARY VERB determines the task category. The noun ""파라미터/parameter"" NEVER
+by itself makes this a parameter-creation task.
+- 추출/내보내/출력/export/excel/csv -> data EXPORT (read + file output)
+- 알려줘/보여줘/list/count/몇 개 -> read/query
+- 변경/수정/일괄/입력/기입/설정/채워/넣어/set/change/input/enter/fill (a value)
+  -> edit an EXISTING parameter's VALUE. Entering a value INTO a parameter — even a
+  named one like ""Comments"" — is ALWAYS a value edit, never creation.
+- Create a NEW parameter ONLY when the user creates the PARAMETER ITSELF
+  (파라미터를 만들/생성/정의, create/define a parameter). ""값을 입력/추가"" = edit, NOT create.
+
+PARAMETER-EDIT RULE (fixes mis-asking binding/type/group):
+For a value edit, do NOT ask binding-category / data-type / parameter-group / instance-
+vs-type questions — those apply ONLY to creating a NEW parameter. If you are unsure
+whether the named parameter exists, do NOT guess ""create"" and do NOT ask: let codegen
+verify at runtime with LookupParameter and report honestly if it is absent.
 
 {categoryChecklist}";
         }

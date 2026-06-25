@@ -34,8 +34,8 @@ namespace Bibim.Core
             sb.AppendLine("move: direction+distance (absolute vs relative); confirm targets");
             sb.AppendLine("copy/array: linear vs radial; count+spacing vs count+length vs spacing only; group or not");
             sb.AppendLine("rotate: axis (X/Y/Z/custom); angle; center (element/origin/point)");
-            sb.AppendLine("parameter — CREATE a NEW param: project vs shared (file path + group if shared); instance vs type; binding categories; on duplicate");
-            sb.AppendLine("parameter — EDIT existing values (set/change): do NOT ask whether it is an instance-or-type parameter or other storage internals — codegen detects type-level/read-only params at runtime via tools. Ask only the target value or scope if genuinely missing.");
+            sb.AppendLine("parameter — CREATE a NEW param (ONLY when the user explicitly says 파라미터 만들/생성/정의 create/define a parameter): project vs shared (file path + group if shared); instance vs type; binding categories; on duplicate");
+            sb.AppendLine("parameter — SET/EDIT a value (변경/수정/입력/기입/설정/set/input/fill — the DEFAULT for any parameter work): do NOT ask binding / data-type / parameter-group / instance-vs-type — those are creation-only. codegen detects type-level/read-only at runtime and reports if the parameter is absent. Ask only the target value or scope if genuinely missing.");
             sb.AppendLine("view (plan/RCP/section/elevation/3D): level (for plans); template; view name");
             sb.AppendLine("sheet: title block family+type (REQUIRED if multiple); sheet number/naming");
             sb.AppendLine("placeViewOnSheet: sheet; viewport position; view scale if different");
