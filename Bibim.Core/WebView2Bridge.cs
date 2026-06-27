@@ -102,11 +102,16 @@ namespace Bibim.Core
             {
                 // WebMessageAsJson returns proper JSON when postMessage receives an object (not a string)
                 string raw = e.WebMessageAsJson;
-                // Mask password field in logs to avoid plain-text credential exposure
+                // Mask any credential field (password + every API-key variant) before
+                // logging — save_api_key / save_*_api_key / save_local_llm_config all
+                // carry plain-text keys in their payload, which must never hit the log.
                 string logSafe = raw;
-                if (logSafe != null && logSafe.Contains("\"password\""))
+                if (logSafe != null)
                     logSafe = System.Text.RegularExpressions.Regex.Replace(
-                        logSafe, "\"password\"\\s*:\\s*\"[^\"]*\"", "\"password\":\"***\"");
+                        logSafe,
+                        "\"(password|apiKey|api_key|anthropic_api_key|claude_api_key|openai_api_key|gemini_api_key|local_api_key)\"\\s*:\\s*\"[^\"]*\"",
+                        "\"$1\":\"***\"",
+                        System.Text.RegularExpressions.RegexOptions.IgnoreCase);
                 Logger.Log("WebView2Bridge", $"Received: {logSafe?.Substring(0, Math.Min(logSafe?.Length ?? 0, 200))}");
 
                 var msg = JsonHelper.Deserialize<BridgeMessage>(raw);

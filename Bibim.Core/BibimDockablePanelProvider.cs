@@ -1001,6 +1001,12 @@ output format (Excel). NEVER re-ask anything already stated.
 No ""just to confirm"" questions. Ask ONLY about genuinely missing or conflicting info.
 
 INTENT-PRIORITY RULE:
+DECISIVE: if the request sets/inputs/fills a VALUE into a parameter (named or not —
+including ""Comments"", ""Mark"", any title), the category is parameter VALUE-EDIT.
+Do NOT classify it as parameter-creation and do NOT emit binding-category / data-type /
+parameter-group / instance-vs-type questions — no matter how the parameter is phrased.
+Those questions belong ONLY to literally creating a new parameter definition.
+
 The PRIMARY VERB determines the task category. The noun ""파라미터/parameter"" NEVER
 by itself makes this a parameter-creation task.
 - 추출/내보내/출력/export/excel/csv -> data EXPORT (read + file output)
@@ -3821,9 +3827,24 @@ Constraints:
 
                     task.Review = BuildTaskReviewSummary(report, previewResult);
                     task.Stage = TaskStages.PreviewReady;
+
+                    // Some operations leave a dry-run artifact behind: file exports drop a
+                    // "_BIBIM_TEST" file, and view/element duplication isn't always rolled
+                    // back by the commit+group-rollback dry-run (Revit views in particular).
+                    // Warn the user so the leftover doesn't read as a real result.
+                    bool leavesArtifact =
+                        CodeGenSystemPrompt.LooksLikeFileOutputTask(task?.Title) ||
+                        CodeGenSystemPrompt.LooksLikeFileOutputTask(task?.Summary) ||
+                        CodeGenSystemPrompt.LooksLikeFileOutputTask(codeToCompile) ||
+                        ContainsAny(BuildTaskSearchText(task), "복제", "duplicate", "Duplicate", ".Duplicate(");
+
                     task.ResultSummary = previewResult.Success
                         ? UiText("Preview completed. Review the result before applying changes.",
                             "미리 검증이 완료되었습니다. 결과를 확인한 뒤 실제 적용하세요.")
+                          + (leavesArtifact
+                            ? UiText("\n※ The preview may leave a temporary artifact (a \"_BIBIM_TEST\" file, or a duplicated view/element) — it is safe to delete. Pressing Apply produces the final result.",
+                                "\n※ 미리 검증 과정에서 임시 잔재(\"_BIBIM_TEST\" 파일 또는 복제된 뷰/요소)가 남을 수 있습니다 — 삭제하셔도 무방합니다. [실제 적용]을 누르면 최종 결과가 생성됩니다.")
+                            : "")
                         : $"Preview failed: {previewResult.ErrorMessage}";
                     UpsertTask(task, autoOpen: true);
 
