@@ -10,7 +10,7 @@ Search existing issues before filing. If you're reporting something new, include
 
 1. **Revit version and BIBIM version**
 2. **The prompt that triggered the issue** — paste it verbatim
-3. **Debug log** (required): `%USERPROFILE%\bibim_v3_debug.txt`
+3. **Debug log** (required): `%AppData%\BIBIM\logs\bibim_debug.txt`
 4. **Codegen output folder** (required): `%AppData%\BIBIM\debug\codegen\YYYYMMDD\`
    — redact any sensitive project data (drawing numbers, internal specs) before attaching
 
