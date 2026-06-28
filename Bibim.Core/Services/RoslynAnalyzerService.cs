@@ -14,13 +14,13 @@ namespace Bibim.Core
     /// Design doc §2.4 — Ghost Object Defense + Custom Analyzers.
     /// 
     /// Analyzers:
-    ///   BIBIM001: Transaction 없이 수정 API 호출 감지
-    ///   BIBIM002: FilteredElementCollector 미해제 감지
-    ///   BIBIM003: ElementType 필터 누락 (유령객체 방어)
-    ///   BIBIM004: Revit 2024+ 제거된 API 사용 감지
-    ///   BIBIM005: XYZ 연산 안전성 검증
-    /// 
-    /// CodeFixProvider: LLM 없이 단순 패턴 자동 수정.
+    ///   BIBIM001: detect modifying API calls made without a Transaction
+    ///   BIBIM002: detect undisposed FilteredElementCollector
+    ///   BIBIM003: missing ElementType filter (ghost-object defense)
+    ///   BIBIM004: detect use of APIs removed in Revit 2024+
+    ///   BIBIM005: XYZ arithmetic safety checks
+    ///
+    /// CodeFixProvider: simple pattern-based auto-fixes (no LLM).
     /// </summary>
     public class RoslynAnalyzerService
     {
