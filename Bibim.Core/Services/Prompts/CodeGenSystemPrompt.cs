@@ -165,6 +165,59 @@ When ANY of those patterns appears:
 This rule overrides any other ""use FilteredElementCollector for queries"" guidance
 when the user uses selection-pointing language.
 
+INTENT-PRIORITY RULE:
+The PRIMARY VERB determines the task category.
+- 추출/내보내/출력/export/excel/csv -> data EXPORT (read + file output). Never treat
+  as parameter-creation just because the word ""파라미터/parameter"" appears.
+- 알려줘/보여줘/list/count -> read/query only.
+- 변경/수정/일괄 -> modify EXISTING values.
+- New parameter creation ONLY when user explicitly says: 파라미터 만들/생성/정의,
+  create/add/define a new parameter.
+
+IDENTIFIER SAFETY:
+When filtering by a level/sheet/view name supplied by the user or the planner:
+1. Collect all candidates first (FilteredElementCollector for Level / ViewSheet).
+2. Match by exact name (case-sensitive). If no match, return a clear message listing
+   the actual available names — do NOT silently proceed with zero elements.
+3. If the filter yields 0 target elements, say so explicitly in the result in the
+   user's language (KR: ""L2에서 조건에 맞는 요소 0개"" / EN: ""0 matching elements on L2"").
+   NEVER report success on an empty result set.
+
+PARAMETER VALUE EDITS:
+To set a parameter value, resolve it on the element via LookupParameter(name) (and,
+if not found there, the element's type). Prefer the BuiltInParameter when the name is
+a standard one (e.g. Comments = ALL_MODEL_INSTANCE_COMMENTS). If the parameter
+genuinely does not exist, do NOT create it — report ""parameter '<name>' not found""
+honestly. Creating a project/shared parameter is a separate task and only when the
+user explicitly asked to create one.
+
+HONEST RESULT REPORTING (CRITICAL):
+1. Track three counts in every WRITE task: attempted / succeeded / failed-or-skipped.
+2. Before modifying an element, check:
+   - Element.GroupId != ElementId.InvalidElementId  (group member — parameter writes will be read-only)
+   - Element.Pinned                                  (pinned — most modifications rejected)
+   Collect these as skipped with the reason instead of letting the write throw.
+3. If failed+skipped > 0, the final return value MUST start with ""⚠"" and state counts
+   and the dominant reason in the user's language. NEVER return a plain success string
+   when succeeded == 0.
+   KR: ""⚠ 12개 중 9개 변경, 3개 건너뜀 (그룹 멤버 — 그룹 편집 필요)""
+   EN: ""⚠ 9 of 12 changed, 3 skipped (group members — edit the group instead)""
+
+MULTI-STEP COMPLETENESS (CRITICAL):
+When the request contains multiple distinct actions (e.g. ""duplicate the views AND
+set their parameters"", ""copy the elements AND renumber them""), you MUST perform
+EVERY action — not just the first or the easiest. A request joined by ""and / 그리고
+/ 또"", a numbered list, or multiple sentences each describing an action = multiple
+steps. Before returning, ctx.Log a one-line checklist of each requested action with
+its status (e.g. ""[1/2] 뷰 복제: 완료"" / ""[2/2] 파라미터 입력: 완료""). If you find a
+step was missed, complete it before returning. Partial completion is a failure.
+
+TASK-MODE CLARIFICATION RULE:
+All clarifications were collected in the planning stage BEFORE this code-generation
+request was issued. Do NOT ask questions or request more information. If a detail is
+genuinely unresolvable, choose the safest interpretation and record the assumption
+via ctx.Log(). Return ONLY the code block.
+
 CAD IMPORT / LINK TASKS:
 When the task involves reading data from an imported or linked CAD file (DWG/DXF) —
 such as recognizing symbols, labels, or geometry from a CAD drawing — ALWAYS ask the

@@ -236,7 +236,14 @@ namespace Bibim.Core
             Func<string, string, CancellationToken, Task<string>> toolExecutor,
             int maxTurns = 10,
             string debugDirectory = null,
-            CancellationToken ct = default)
+            CancellationToken ct = default,
+            // ── Runtime self-correction (안 A+) ──
+            // When supplied, after a successful compile the loop runs this validator
+            // (a dry-run preview) and, if it asks to regenerate, feeds the result back
+            // and continues — exactly mirroring the existing compile-error feedback loop.
+            // null + maxRuntimeRetries=0 ⇒ disabled, behaviour identical to before.
+            Func<CompilationResult, CancellationToken, Task<DryRunOutcome>> dryRunValidator = null,
+            int maxRuntimeRetries = 0)
         {
             var requestId = Guid.NewGuid().ToString("N").Substring(0, 8);
             var result = new CodeGenerationResult
@@ -246,6 +253,7 @@ namespace Bibim.Core
             };
 
             JArray messages = BuildMessagesArray(history);
+            int runtimeRetries = 0;
 
             try
             {
@@ -379,9 +387,58 @@ namespace Bibim.Core
 
                         if (compileResult.Success)
                         {
+                            // ── Runtime self-correction (안 A+) ──
+                            // Compile OK ≠ runtime OK. If a validator is wired, run a
+                            // dry-run preview; if it reports the result is wrong (runtime
+                            // exception / 0 elements / missing step), feed it back and
+                            // regenerate — same mechanism as the compile-error loop above.
+                            // Bounded by maxRuntimeRetries so it can never loop forever,
+                            // and still inside the outer maxTurns budget.
+                            // Validator runs on EVERY successful compile (so the captured
+                            // dry-run always matches the FINAL code, letting the caller
+                            // reuse it as the preview instead of running dry-run twice).
+                            // Only the *regeneration* is bounded by maxRuntimeRetries.
+                            if (dryRunValidator != null)
+                            {
+                                OnStatusUpdate?.Invoke("Validating (preview)...");
+                                DryRunOutcome outcome = null;
+                                try
+                                {
+                                    outcome = await dryRunValidator(compileResult, ct);
+                                }
+                                catch (OperationCanceledException) { throw; }
+                                catch (Exception vex)
+                                {
+                                    // Validator failure must never block code delivery —
+                                    // fall through and return the compiled code as-is.
+                                    Logger.LogError("LlmOrchestration.dryRunValidator", vex);
+                                }
+
+                                if (outcome != null && outcome.ShouldRegenerate
+                                    && runtimeRetries < maxRuntimeRetries)
+                                {
+                                    runtimeRetries++;
+                                    Logger.Log("LlmOrchestration",
+                                        $"rid={requestId} runtime validation → regenerate " +
+                                        $"(retry {runtimeRetries}/{maxRuntimeRetries})");
+                                    CodegenDebugRecorder.WriteText(debugDirectory,
+                                        $"tool_turn_{turn:00}_runtime_validation.txt",
+                                        outcome.FeedbackText ?? "(no feedback text)");
+
+                                    messages.Add(new JObject { ["role"] = "assistant", ["content"] = content });
+                                    messages.Add(new JObject
+                                    {
+                                        ["role"] = "user",
+                                        ["content"] = outcome.FeedbackText ?? "The preview result looks wrong. Please review and regenerate."
+                                    });
+                                    continue;
+                                }
+                            }
+
                             result.Success = true;
                             Logger.Log("LlmOrchestration",
-                                $"rid={requestId} tool-loop done turns={turn + 1} compile=OK");
+                                $"rid={requestId} tool-loop done turns={turn + 1} compile=OK" +
+                                (runtimeRetries > 0 ? $" runtime-retries={runtimeRetries}" : ""));
                             OnStatusUpdate?.Invoke(null);
                             return result;
                         }
@@ -705,5 +762,25 @@ namespace Bibim.Core
         public int CachedInputTokens { get; set; }
         public int CacheCreationInputTokens { get; set; }
         public long ElapsedMs { get; set; }
+    }
+
+    /// <summary>
+    /// Result of a runtime self-correction validation pass (안 A+).
+    /// Produced by the dryRunValidator callback that GenerateWithToolsAsync runs
+    /// after a successful compile. The orchestrator only reads ShouldRegenerate +
+    /// FeedbackText; the actual dry-run ExecutionResult stays inside the caller's
+    /// closure (BibimDockablePanelProvider) so this layer never depends on the
+    /// Revit execution types.
+    /// </summary>
+    public sealed class DryRunOutcome
+    {
+        /// <summary>True ⇒ feed FeedbackText back to the model and regenerate.</summary>
+        public bool ShouldRegenerate { get; set; }
+
+        /// <summary>The runtime-validation message handed to the model on regenerate.</summary>
+        public string FeedbackText { get; set; }
+
+        /// <summary>True if a dry-run actually executed (false if skipped by a guard).</summary>
+        public bool Ran { get; set; }
     }
 }

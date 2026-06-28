@@ -43,6 +43,13 @@ namespace Bibim.Core
             public bool EnableApiXmlHints { get; set; }
             public string ValidationRolloutPhase { get; set; }
 
+            // Runtime self-correction (안 A+). After a successful compile, run a
+            // dry-run preview and regenerate if the result looks wrong (runtime
+            // exception / 0 elements / missing step). Master switch + bounds.
+            public bool SelfCorrectionEnabled { get; set; }
+            public int SelfCorrectionMaxRetries { get; set; }  // runtime regenerations per task
+            public int SelfCorrectionScaleGuard { get; set; }  // affected>this ⇒ skip (dry-run too costly)
+
             // Version-specific RAG stores map (e.g., "2025" → "fileSearchStores/...")
             public Dictionary<string, string> Stores { get; set; }
             public string FallbackStore { get; set; }
@@ -291,6 +298,9 @@ namespace Bibim.Core
             bool validationGateEnabled = true, autoFixEnabled = true, verifyStageEnabled = false, enableApiXmlHints = true;
             int autoFixMaxAttempts = 2;
             string validationRolloutPhase = "phase3";
+            bool selfCorrectionEnabled = true;
+            int selfCorrectionMaxRetries = 1;
+            int selfCorrectionScaleGuard = 500;
 
             try
             {
@@ -437,6 +447,16 @@ namespace Bibim.Core
                     bool.TryParse(val["verify_stage_enabled"]?.ToString(), out verifyStageEnabled);
                     bool.TryParse(val["enable_api_xml_hints"]?.ToString(), out enableApiXmlHints);
                     validationRolloutPhase = val["rollout_phase"]?.ToString() ?? "phase3";
+
+                    // Self-correction keys — only override defaults when present
+                    // (older configs omit them; we want enabled=true/retries=1/guard=500
+                    // to survive a missing key rather than collapse to false/0).
+                    if (val["self_correction_enabled"] != null)
+                        bool.TryParse(val["self_correction_enabled"].ToString(), out selfCorrectionEnabled);
+                    if (val["self_correction_max_retries"] != null)
+                        int.TryParse(val["self_correction_max_retries"].ToString(), out selfCorrectionMaxRetries);
+                    if (val["self_correction_scale_guard"] != null)
+                        int.TryParse(val["self_correction_scale_guard"].ToString(), out selfCorrectionScaleGuard);
                 }
             }
             catch (Exception ex)
@@ -469,7 +489,10 @@ namespace Bibim.Core
                 AutoFixMaxAttempts = autoFixMaxAttempts < 0 ? 0 : autoFixMaxAttempts,
                 VerifyStageEnabled = verifyStageEnabled,
                 EnableApiXmlHints = enableApiXmlHints,
-                ValidationRolloutPhase = validationRolloutPhase
+                ValidationRolloutPhase = validationRolloutPhase,
+                SelfCorrectionEnabled = selfCorrectionEnabled,
+                SelfCorrectionMaxRetries = selfCorrectionMaxRetries < 0 ? 0 : selfCorrectionMaxRetries,
+                SelfCorrectionScaleGuard = selfCorrectionScaleGuard < 0 ? 0 : selfCorrectionScaleGuard
             };
         }
 

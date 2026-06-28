@@ -35,10 +35,11 @@ export default function ChatPanel({
   onFeedbackDetail, onRegenerate, onRerun, onQuestionAnswers, onWarningResponse, isMandatoryUpdate,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Show the question card whenever the task needs details and has questions.
+  // Empty options array is valid — it means a free-text-only question (U-1 fix).
   const hasQuestions = currentTask?.stage === 'needs_details'
     && currentTask.questions
-    && currentTask.questions.length > 0
-    && currentTask.questions.some(q => q.options && q.options.length > 0);
+    && currentTask.questions.length > 0;
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -77,7 +78,9 @@ export default function ChatPanel({
             <div style={{
               fontSize: 'var(--text-sm)',
               color: 'var(--color-text-muted)',
-              textAlign: 'center', maxWidth: 320,
+              textAlign: 'left', maxWidth: 340,
+              whiteSpace: 'pre-line',
+              lineHeight: 1.6,
             }}>
               {t('welcomeBody')}
             </div>

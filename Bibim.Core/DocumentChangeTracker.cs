@@ -21,6 +21,10 @@ namespace Bibim.Core
                 _documentSequences[key] = sequence;
             }
 
+            // Invalidate the identifier probe cache so the next planner call
+            // picks up any new levels / sheets the user just added or removed.
+            ModelIdentifierProbe.InvalidateCache();
+
             return sequence;
         }
 

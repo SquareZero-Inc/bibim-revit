@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 import { t } from '../i18n';
 import type { ProgressStep } from '../types';
 
@@ -30,6 +30,14 @@ function isRevitExecuting(steps: ProgressStep[]): boolean {
  */
 export default function LoadingModal({ open, steps, onCancel }: Props) {
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    setElapsed(0);
+    if (!open) return;
+    const id = setInterval(() => setElapsed(s => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [open]);
 
   if (!open) return null;
 
@@ -81,6 +89,13 @@ export default function LoadingModal({ open, steps, onCancel }: Props) {
 
         {totalCount > 0 && (
           <span style={countStyle}>{doneCount}/{totalCount}</span>
+        )}
+        {elapsed > 0 && (
+          <span style={{ ...countStyle, marginLeft: 2 }}>
+            ⏱ {Math.floor(elapsed / 60) > 0
+              ? `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`
+              : `${elapsed}s`}
+          </span>
         )}
 
         <button onClick={handleStopClick} style={cancelStyle}>{t('stop')}</button>

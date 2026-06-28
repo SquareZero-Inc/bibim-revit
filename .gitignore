@@ -372,9 +372,16 @@ apikey.txt
 resources/
 BIBIM_V3_TODO.md
 credit_migration.md
+specs/
+
+# On-device test records (may contain logs with credentials) — never publish
+# Naming convention: "<MMDD> test/" e.g. "0627 test/"
+* test/
 
 # Local config with real API keys — NEVER commit
 Bibim.Core/Config/rag_config.json
+# Client build config — holds plaintext per-client API keys (CLIENT_BUILD only)
+Bibim.Core/ClientBuildConfig.cs
 
 # Legacy Supabase setup files
 supabase-setup/

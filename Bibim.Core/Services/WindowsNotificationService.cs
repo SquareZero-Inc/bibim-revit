@@ -21,6 +21,7 @@ namespace Bibim.Core
         /// </summary>
         public static void ShowNotification(string title, string message, ToolTipIcon icon = ToolTipIcon.Info)
         {
+            Logger.Log("Notification", $"Toast attempt: {title}");
             try
             {
                 lock (_lock)

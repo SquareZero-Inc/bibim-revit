@@ -161,8 +161,14 @@ foreach ($buildLang in $langsToBuild) {
         $sdkYear = $targetFolder
         $sdkPath = if ($RevitSdkPath) { Join-Path $RevitSdkPath '' } else { "C:\Program Files\Autodesk\Revit $sdkYear" }
 
-        if (-not (Test-Path $sdkPath)) {
-            Write-Host "    -> skipping $targetConfig ($targetFramework): Revit not found at $sdkPath" -ForegroundColor DarkYellow
+        # Guard on the actual API assembly, not just the folder. An uninstalled
+        # Revit can leave a stub folder behind (e.g. AddInsManager) that passes a
+        # folder Test-Path but has no RevitAPI.dll — which would then fail the
+        # compile with 50+ CS0246 errors and kill the whole pipeline. Checking the
+        # DLL makes the skip correct for partial/leftover installs too.
+        $revitApiDll = Join-Path $sdkPath "RevitAPI.dll"
+        if (-not (Test-Path $revitApiDll)) {
+            Write-Host "    -> skipping $targetConfig ($targetFramework): RevitAPI.dll not found at $sdkPath (Revit not installed or leftover stub folder)" -ForegroundColor DarkYellow
             continue
         }
 

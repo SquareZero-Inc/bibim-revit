@@ -22,11 +22,13 @@ export default function QuestionCard({ questions, onComplete }: Props) {
     setCurrentIndex(0);
     setAnswers({});
     setCustomText('');
-    setShowCustomInput(false);
     setMultiSelected(new Set());
     setShowSkipWarning(false);
     submittedRef.current = false;
-  }, [questionsKey]);
+    // Auto-expand free-text input when there are no options (empty options = free-text question)
+    const firstQ = questions[0];
+    setShowCustomInput((firstQ?.options?.length ?? 0) === 0);
+  }, [questionsKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const question = questions[currentIndex];
   const isMulti = question?.selectionType === 'multi';
@@ -90,12 +92,14 @@ export default function QuestionCard({ questions, onComplete }: Props) {
 
   const goToPrev = useCallback(() => {
     if (currentIndex > 0) {
-      setCurrentIndex(currentIndex - 1);
+      const prevIdx = currentIndex - 1;
+      setCurrentIndex(prevIdx);
       setCustomText('');
-      setShowCustomInput(false);
       setMultiSelected(new Set());
+      // Auto-expand free-text input if the previous question has no options
+      setShowCustomInput((questions[prevIdx]?.options?.length ?? 0) === 0);
     }
-  }, [currentIndex]);
+  }, [currentIndex, questions]);
 
   if (!question) return null;
 
@@ -141,9 +145,9 @@ export default function QuestionCard({ questions, onComplete }: Props) {
         </div>
       )}
 
-      {/* Options */}
+      {/* Options — guarded: empty/absent options array shows free-text only */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-xs)' }}>
-        {question.options.map((option, idx) => {
+        {(question.options ?? []).map((option, idx) => {
           const isSelected = isMulti ? multiSelected.has(option) : false;
           return (
             <button

@@ -970,10 +970,58 @@ JSON schema:
 }}
 
 Question rules:
-- Each question MUST have 2-5 concrete options the user can click.
+- Provide 2-5 clickable options ONLY when you can enumerate real or sensible values
+  (from [MODEL CONTEXT], or universal choices like skip/overwrite/all).
+  If you cannot honestly enumerate options (e.g. a free-form path or custom name),
+  return an empty options array — the UI shows a free-text input instead.
 - Use ""single"" when only one answer makes sense, ""multi"" when multiple can apply.
 - Options should be short, clear labels (not full sentences).
 - The user can also type a custom answer, so options don't need to cover every case.
+
+IDENTIFIER RESOLUTION (CRITICAL):
+A [MODEL CONTEXT] block above lists the ACTUAL level/sheet/phase/workset names in
+this project. When the user refers to a floor, level, or sheet loosely
+(e.g. ""2층"", ""지하"", ""1F"", ""the third floor"", ""A1 sheets""):
+1. Match it against [MODEL CONTEXT] silently.
+   - Exactly ONE plausible match -> use that real name. DO NOT ask. Include the
+     mapping in the task summary in the user's UI language:
+     Korean: 해석: '2층' → 'L2'   |   English: Interpreted: '2nd floor' → 'L2'
+   - MULTIPLE plausible matches -> ask ONE question whose options are EXACTLY those
+     real names copied verbatim from [MODEL CONTEXT] (plus ""모두""/""All"" if applicable).
+   - ZERO matches -> ask, listing the real names from [MODEL CONTEXT] as options.
+2. NEVER invent identifier options. If [MODEL CONTEXT] is absent, ask a free-text
+   question (empty options array) instead of fabricating options.
+3. LANGUAGE: all user-facing text (questions, summaries, mapping line) MUST be in
+   the user's UI language. [MODEL CONTEXT] itself is always English (internal only).
+
+EXPLICIT-INFO RULE (CRITICAL):
+Before generating questions, extract everything the user already stated: values with
+units (1200mm), target scope, processing order (""개수 먼저 알려주고 확인 후 적용""),
+output format (Excel). NEVER re-ask anything already stated.
+No ""just to confirm"" questions. Ask ONLY about genuinely missing or conflicting info.
+
+INTENT-PRIORITY RULE:
+DECISIVE: if the request sets/inputs/fills a VALUE into a parameter (named or not —
+including ""Comments"", ""Mark"", any title), the category is parameter VALUE-EDIT.
+Do NOT classify it as parameter-creation and do NOT emit binding-category / data-type /
+parameter-group / instance-vs-type questions — no matter how the parameter is phrased.
+Those questions belong ONLY to literally creating a new parameter definition.
+
+The PRIMARY VERB determines the task category. The noun ""파라미터/parameter"" NEVER
+by itself makes this a parameter-creation task.
+- 추출/내보내/출력/export/excel/csv -> data EXPORT (read + file output)
+- 알려줘/보여줘/list/count/몇 개 -> read/query
+- 변경/수정/일괄/입력/기입/설정/채워/넣어/set/change/input/enter/fill (a value)
+  -> edit an EXISTING parameter's VALUE. Entering a value INTO a parameter — even a
+  named one like ""Comments"" — is ALWAYS a value edit, never creation.
+- Create a NEW parameter ONLY when the user creates the PARAMETER ITSELF
+  (파라미터를 만들/생성/정의, create/define a parameter). ""값을 입력/추가"" = edit, NOT create.
+
+PARAMETER-EDIT RULE (fixes mis-asking binding/type/group):
+For a value edit, do NOT ask binding-category / data-type / parameter-group / instance-
+vs-type questions — those apply ONLY to creating a NEW parameter. If you are unsure
+whether the named parameter exists, do NOT guess ""create"" and do NOT ask: let codegen
+verify at runtime with LookupParameter and report honestly if it is absent.
 
 {categoryChecklist}";
         }
@@ -1017,6 +1065,29 @@ Question rules:
                 ? resolvedText
                 : "(none)";
 
+            // Probe actual project identifiers (levels, sheets, phases, worksets)
+            // so the planner can resolve loose references ("2층", "A1 시트") without
+            // asking. RevitContextProvider + FilteredElementCollector require the
+            // Revit/WPF main thread — dispatch synchronously with a short timeout.
+            // Returns empty string on failure (non-fatal; planner still works, just
+            // without the identifier block).
+            string identifierBlock = string.Empty;
+            try
+            {
+                EnsureContextProvider();
+                if (_contextProvider != null && System.Windows.Application.Current != null)
+                {
+                    var provider = _contextProvider;
+                    identifierBlock = System.Windows.Application.Current.Dispatcher
+                        .Invoke(() => ModelIdentifierProbe.BuildContextBlock(provider),
+                                System.Windows.Threading.DispatcherPriority.Background);
+                }
+            }
+            catch (Exception probeEx)
+            {
+                Logger.Log("IdentifierProbe", $"Skipped in planner: {probeEx.Message}");
+            }
+
             return $@"[LATEST USER MESSAGE]
 {userText}
 
@@ -1031,7 +1102,7 @@ Question rules:
 
 [RECENT CONVERSATION]
 {string.Join(Environment.NewLine, recentHistory)}
-
+{(string.IsNullOrEmpty(identifierBlock) ? "" : $"\n{identifierBlock}")}
 [Output format: respond with JSON only — no markdown, no commentary.]";
         }
 
@@ -1283,7 +1354,13 @@ Question rules:
                 "export", "출력", "내보내", "내보내기", "이동", "옮겨",
                 "복사", "복제", "회전", "rename", "rename",
                 "create", "make", "place", "add", "modify", "edit", "build",
-                "delete", "remove", "move", "copy", "rotate");
+                "delete", "remove", "move", "copy", "rotate",
+                // Graphic override / visibility verbs — these route to code-gen,
+                // NOT the model-summary branch. "색상 강조" / "하이라이트" / "hide" etc.
+                // NB: "표시" / "보여" intentionally excluded — they appear in READ
+                //     requests ("현재 뷰 정보 표시해줘") and would block those.
+                "강조", "하이라이트", "색상", "칠해", "칠하", "재지정", "격리", "숨기", "숨겨",
+                "override", "highlight", "color", "colour", "paint", "graphic", "isolate", "hide");
 
             return mentionsCurrentContext && asksForDescription && !mentionsWriteAction;
         }
@@ -1459,7 +1536,8 @@ Constraints:
 - If a previous execution failed, analyze the error and generate code that avoids the same failure.
 - Return ONLY a ```csharp``` block containing statements for the body of Execute(UIApplication uiApp, Bibim.Core.BibimExecutionContext ctx).
 - Use ctx.Log(""message"") to record intermediate progress (e.g. element counts, decisions, skipped items). These appear in the BIBIM panel after execution.
-- Do NOT include using directives, namespace, class, method signature, markdown outside the code block, or explanation text.{commentLangRule}";
+- Do NOT include using directives, namespace, class, method signature, markdown outside the code block, or explanation text.
+- All clarifications were collected before this request. Do NOT ask questions or add text outside the code block.{commentLangRule}";
         }
 
         private ApiInspectionReport InspectGeneratedCode(string sourceCode, ExecutionResult dryRunResult = null)
@@ -1737,13 +1815,13 @@ Constraints:
             });
 
             // --- question_answers: structured Q&A from Question Card UI ---
-            RegisterAsyncHandler("question_answers", payload =>
+            RegisterAsyncHandler("question_answers", async payload =>
             {
                 var answers = payload["answers"] as Newtonsoft.Json.Linq.JArray;
                 Logger.Log("BridgeHandler", $"question_answers: {answers?.Count ?? 0} answers");
 
                 var task = GetActiveTask();
-                if (task == null || answers == null) return Task.CompletedTask;
+                if (task == null || answers == null) return;
 
                 foreach (var answerObj in answers)
                 {
@@ -1778,25 +1856,35 @@ Constraints:
                             "모든 질문을 건너뛰었습니다. BIBIM이 기본값으로 진행하지만, 원하는 결과와 다를 수 있습니다."));
                 }
 
+                // Store Q&A in internal history for planner context (sliding window),
+                // but do NOT echo it back to the chat panel as a user bubble.
+                // Displaying "Q: ... A: ..." as if the user typed it is confusing —
+                // the user answered via card UI, not by typing. The task panel's
+                // summary already shows the collected answers.
                 lock (_chatHistoryLock) _chatHistory.Add(new ChatMessage { Text = qaText, IsUser = true });
                 _sessionManager?.AddMessage(_activeSessionId, "user", "text", qaText);
 
                 task.Questions = new List<QuestionItem>();
-                task.Stage = TaskStages.Review;
-                UpsertTask(task, autoOpen: true);
                 SendSessionList();
 
-                _bridge.PostMessage("streaming_end", new
+                // F-2: After Q&A the task has all details — skip the manual "작업 확인"
+                // gate for WRITE tasks (preview is non-destructive; the real safety gate
+                // is "실제 적용"). Broad-read review tasks still pause for scope confirmation.
+                if (task.Kind == TaskKinds.Write && !IsBuiltInCurrentContextSummaryTaskV2(task))
                 {
-                    text = qaText,
-                    type = "normal",
-                    isUser = true,
-                    inputTokens = 0,
-                    outputTokens = 0,
-                    elapsedMs = 0
-                });
+                    task.Stage = TaskStages.Working;
+                    UpsertTask(task, autoOpen: true);
+                    _bridge.PostMessage("system_message",
+                        UiText("Details collected. Generating code and running a preview...",
+                               "정보 수집 완료. 코드를 생성하고 미리 검증합니다..."));
+                    await GenerateCodeFromTaskAsync(task, runAfterGeneration: true);
+                }
+                else
+                {
+                    task.Stage = TaskStages.Review;
+                    UpsertTask(task, autoOpen: true);
+                }
 
-                return Task.CompletedTask;
             });
 
             RegisterAsyncHandler("task_action", async payload =>
@@ -1947,7 +2035,11 @@ Constraints:
                         feedbackEnabled: false,
                         feedbackState: action?.FeedbackState);
 
-                    if (action != null)
+                    // F-4: Suppress the active feedback bubble on success — the 👍/👎
+                    // icons are already attached to the message via feedbackEnabled on
+                    // the message itself. Active prompting on every success interrupts
+                    // flow; reserve it for failures where the user needs a recovery path.
+                    if (action != null && !execResult.Success)
                         _bridge.PostMessage("feedback_request", new { actionId = action.ActionId, taskId = action.TaskId });
 
                     // If Revit warnings fired during commit, prompt user to re-generate
@@ -3233,12 +3325,15 @@ Constraints:
         {
             if (string.Equals(plan.TaskRelation, "ask", StringComparison.OrdinalIgnoreCase))
             {
-                string askText = string.IsNullOrWhiteSpace(plan.AssistantMessage)
-                    ? UiText("Should I update the current task or start a new one?",
-                        "현재 작업에 반영할까요, 새 작업으로 시작할까요?")
-                    : plan.AssistantMessage;
-                SendAssistantMessage(askText, "question", messageType: "question");
-                return;
+                // F-5: Instead of blocking the user with a meta-question ("update or new?"),
+                // treat ambiguous intent as a new task and notify inline.
+                // The user can always say "이전 작업에 추가해줘" to redirect.
+                string noticeText = UiText(
+                    "Starting as a new task — say \"add to the previous task\" if you meant to continue it.",
+                    "새 작업으로 진행합니다 — 이전 작업에 이어붙이려면 \"이전 작업에 추가해줘\"라고 말씀해주세요.");
+                _bridge.PostMessage("system_message", noticeText);
+                plan.TaskRelation = "new";
+                // Fall through to new-task handling below.
             }
 
             var activeTask = GetActiveTask();
@@ -3577,11 +3672,37 @@ Constraints:
                     task?.SourceUserMessage ?? "",
                     taskPrompt ?? "");
 
+                // ── Runtime self-correction (안 A+) ──
+                // For WRITE tasks that will preview, wire a validator that runs the
+                // dry-run inside the codegen loop. The dry-run ExecutionResult is
+                // captured here (closure) so the preview step below can REUSE it
+                // instead of running dry-run a second time (critical for large tasks
+                // whose dry-run takes minutes). The validator stays out of
+                // LlmOrchestrationService — it only returns a DryRunOutcome.
+                var scCfg = ConfigService.GetRagConfig();
+                bool scEnabled = scCfg?.SelfCorrectionEnabled ?? true;
+                int scMaxRetries = scCfg?.SelfCorrectionMaxRetries ?? 1;
+                int scScaleGuard = scCfg?.SelfCorrectionScaleGuard ?? 500;
+                ExecutionResult capturedDryRun = null;
+
+                Func<CompilationResult, CancellationToken, Task<DryRunOutcome>> runtimeValidator = null;
+                if (scEnabled && task.Kind == TaskKinds.Write && runAfterGeneration)
+                {
+                    runtimeValidator = async (compResult, vct) =>
+                    {
+                        var exec = await ExecuteCompilationAsync(compResult, isDryRun: true, task);
+                        capturedDryRun = exec;   // reused as the preview below
+                        return JudgeRuntimeResult(exec, scScaleGuard);
+                    };
+                }
+
                 var agentResult = await llm.GenerateWithToolsAsync(
                     generationHistory, systemPrompt,
                     BibimToolService.GetToolDefinitions(toolHint),
                     CreateToolService().ExecuteAsync,
-                    maxTurns: 15, debugDirectory, ct);
+                    maxTurns: 15, debugDirectory, ct,
+                    dryRunValidator: runtimeValidator,
+                    maxRuntimeRetries: scEnabled ? scMaxRetries : 0);
 
                 _lastCodeGenResult = agentResult;
 
@@ -3681,7 +3802,11 @@ Constraints:
 
                 if (runAfterGeneration)
                 {
-                    var previewResult = await ExecuteCompiledCodeAsync(isDryRun: true);
+                    // Reuse the dry-run the self-correction validator already ran on
+                    // the FINAL code (avoids a duplicate dry-run, which matters when a
+                    // single dry-run takes minutes). Falls back to a fresh dry-run when
+                    // self-correction was disabled / not wired for this task.
+                    var previewResult = capturedDryRun ?? await ExecuteCompiledCodeAsync(isDryRun: true);
                     var report = InspectGeneratedCode(codeToCompile, previewResult);
                     BindTaskToExecutedDocument(task, previewResult);
 
@@ -3702,9 +3827,24 @@ Constraints:
 
                     task.Review = BuildTaskReviewSummary(report, previewResult);
                     task.Stage = TaskStages.PreviewReady;
+
+                    // Some operations leave a dry-run artifact behind: file exports drop a
+                    // "_BIBIM_TEST" file, and view/element duplication isn't always rolled
+                    // back by the commit+group-rollback dry-run (Revit views in particular).
+                    // Warn the user so the leftover doesn't read as a real result.
+                    bool leavesArtifact =
+                        CodeGenSystemPrompt.LooksLikeFileOutputTask(task?.Title) ||
+                        CodeGenSystemPrompt.LooksLikeFileOutputTask(task?.Summary) ||
+                        CodeGenSystemPrompt.LooksLikeFileOutputTask(codeToCompile) ||
+                        ContainsAny(BuildTaskSearchText(task), "복제", "duplicate", "Duplicate", ".Duplicate(");
+
                     task.ResultSummary = previewResult.Success
                         ? UiText("Preview completed. Review the result before applying changes.",
                             "미리 검증이 완료되었습니다. 결과를 확인한 뒤 실제 적용하세요.")
+                          + (leavesArtifact
+                            ? UiText("\n※ The preview may leave a temporary artifact (a \"_BIBIM_TEST\" file, or a duplicated view/element) — it is safe to delete. Pressing Apply produces the final result.",
+                                "\n※ 미리 검증 과정에서 임시 잔재(\"_BIBIM_TEST\" 파일 또는 복제된 뷰/요소)가 남을 수 있습니다 — 삭제하셔도 무방합니다. [실제 적용]을 누르면 최종 결과가 생성됩니다.")
+                            : "")
                         : $"Preview failed: {previewResult.ErrorMessage}";
                     UpsertTask(task, autoOpen: true);
 
@@ -3748,9 +3888,92 @@ Constraints:
         }
 
         /// <summary>
+        /// Judge a dry-run ExecutionResult for runtime self-correction (안 A+) — Tier 1.
+        /// Triggers regeneration on a runtime exception OR a 0-element result (a WRITE
+        /// task that changed nothing — filter matched nothing, or every write was
+        /// rejected as read-only). Large tasks (affected > scaleGuard) are skipped
+        /// because a repeated dry-run would cost minutes. Bounded to maxRetries=1
+        /// upstream, so a genuinely-empty result wastes at most one retry.
+        /// (Tier 2 multi-step semantic judging is added in Phase 4.)
+        /// </summary>
+        private DryRunOutcome JudgeRuntimeResult(ExecutionResult exec, int scaleGuard)
+        {
+            if (exec == null)
+                return new DryRunOutcome { Ran = false, ShouldRegenerate = false };
+
+            // Scale guard — a dry-run on a huge element set can take minutes; don't
+            // pay that twice. Let the user judge the preview instead. (Checked first
+            // so a large successful task never trips the 0-element branch.)
+            if (exec.AffectedElementCount > scaleGuard)
+            {
+                Logger.Log("SelfCorrection",
+                    $"scale guard hit (affected={exec.AffectedElementCount} > {scaleGuard}); skipping self-correction");
+                return new DryRunOutcome { Ran = true, ShouldRegenerate = false };
+            }
+
+            // Runtime exception — the clearest failure signal.
+            if (!exec.Success)
+            {
+                return new DryRunOutcome
+                {
+                    Ran = true,
+                    ShouldRegenerate = true,
+                    FeedbackText = BuildRuntimeFeedback(exec, "a runtime exception occurred")
+                };
+            }
+
+            // 0 elements affected — a WRITE task that changed nothing. Usually a bad
+            // filter (wrong name / category) or every write rejected (read-only /
+            // type-level parameter). May genuinely be 0; bounded retry absorbs that.
+            if (exec.AffectedElementCount == 0)
+            {
+                return new DryRunOutcome
+                {
+                    Ran = true,
+                    ShouldRegenerate = true,
+                    FeedbackText = BuildRuntimeFeedback(exec,
+                        "0 elements were affected — the filter likely matched nothing, " +
+                        "or every write was rejected (e.g. a read-only / type-level parameter)")
+                };
+            }
+
+            return new DryRunOutcome { Ran = true, ShouldRegenerate = false };
+        }
+
+        /// <summary>
+        /// Build the runtime-validation feedback handed back to the model when a
+        /// dry-run reveals a problem. Deliberately minimal — the actual error / log
+        /// IS the teacher (that's the whole point of self-correction); we don't pile
+        /// on case-specific Revit lore here. <paramref name="reason"/> names the
+        /// detected problem so the model knows what to fix.
+        /// </summary>
+        private string BuildRuntimeFeedback(ExecutionResult exec, string reason)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("[RUNTIME VALIDATION] Your code compiled and ran as a dry-run preview (changes rolled back).");
+            sb.AppendLine("Result:");
+            sb.AppendLine($"- Status: {(exec.Success ? "Success" : "FAILED")}");
+            if (!string.IsNullOrWhiteSpace(exec.ErrorMessage))
+                sb.AppendLine($"- Runtime error: {Truncate(exec.ErrorMessage, 600)}");
+            sb.AppendLine($"- Affected elements: {exec.AffectedElementCount}");
+            if (exec.HasExecutionLogs)
+            {
+                sb.AppendLine("- Execution log:");
+                sb.AppendLine(Truncate(string.Join("\n", exec.ExecutionLogs), 2000));
+            }
+            sb.AppendLine();
+            sb.AppendLine($"This looks wrong: {reason}.");
+            sb.AppendLine("Diagnose the ROOT CAUSE from the error/log above and regenerate the code. " +
+                "Use tools (get_element_parameters, get_project_levels, search_revit_api) to verify " +
+                "assumptions instead of guessing. If you are CERTAIN the result is actually correct " +
+                "(e.g. there genuinely are 0 matching elements), return the same code unchanged.");
+            return sb.ToString();
+        }
+
+        /// <summary>
         /// Generate code from the confirmed spec using the agent loop.
         /// Stores the result for later execute (dryrun/commit).
-        /// 
+        ///
         /// Integrates:
         ///   - CodeGenSystemPrompt.Build(revitVersion, isCodeGeneration: true)
         ///   - GenerateWithToolsAsync (Claude Tool Use loop with auto-compile)
