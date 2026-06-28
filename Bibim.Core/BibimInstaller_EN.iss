@@ -18,7 +18,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={autopf}\{#MyAppName}\Revit
 DefaultGroupName={#MyAppName}
 OutputDir=Output
 OutputBaseFilename=BIBIM_AI_v{#MyAppVersion}_{#MyBuildId}_EN_Setup
@@ -88,7 +88,7 @@ begin
   begin
     MsgBox(
       'Revit is currently running.' + #13#10 +
-      'Please close all Revit 2024/2025/2026 instances before installing BIBIM AI.',
+      'Please close all Revit (2022-2027) instances before installing BIBIM AI.',
       mbError,
       MB_OK);
   end;
@@ -170,8 +170,8 @@ begin
       '1. Launch Revit.' + #13#10 +
       '2. Click the BIBIM tab in the top ribbon.' + #13#10 +
       '3. Click [Open BIBIM] to open the panel.' + #13#10 +
-      '4. Enter your Anthropic API key in Settings (⚙) to get started.' + #13#10 + #13#10 +
-      'Get your API key at: https://console.anthropic.com',
+      '4. Enter an API key (Anthropic, OpenAI, or Gemini) in Settings (⚙) to get started.' + #13#10 + #13#10 +
+      'Get an Anthropic key at: https://console.anthropic.com',
       mbInformation, MB_OK);
   end;
 end;

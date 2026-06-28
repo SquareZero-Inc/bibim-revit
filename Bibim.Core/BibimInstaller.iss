@@ -18,7 +18,7 @@ AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
-DefaultDirName={autopf}\{#MyAppName}
+DefaultDirName={autopf}\{#MyAppName}\Revit
 DefaultGroupName={#MyAppName}
 OutputDir=Output
 OutputBaseFilename=BIBIM_AI_v{#MyAppVersion}_{#MyBuildId}_KO_Setup
@@ -50,7 +50,7 @@ Source: "Config\*"; DestDir: "{app}\Config"; Flags: ignoreversion recursesubdirs
 [Run]
 Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; \
   Parameters: "/silent /install"; \
-  StatusMsg: "Installing WebView2 Runtime..."; \
+  StatusMsg: "WebView2 런타임 설치 중..."; \
   Check: NeedsWebView2Runtime; \
   Flags: waituntilterminated
 
@@ -88,7 +88,7 @@ begin
   begin
     MsgBox(
       'Revit가 실행 중입니다.' + #13#10 +
-      'Revit 2024/2025/2026을 모두 종료한 후 다시 설치해 주세요.',
+      'Revit(2022~2027)을 모두 종료한 후 다시 설치해 주세요.',
       mbError,
       MB_OK);
   end;
@@ -170,8 +170,8 @@ begin
       '1. Revit을 실행하세요.' + #13#10 +
       '2. 상단 리본 메뉴에서 BIBIM 탭을 클릭하세요.' + #13#10 +
       '3. [Open BIBIM] 버튼을 눌러 패널을 열어주세요.' + #13#10 +
-      '4. 설정(⚙)에서 Anthropic API 키를 입력하면 바로 사용할 수 있습니다.' + #13#10 + #13#10 +
-      'API 키 발급: https://console.anthropic.com',
+      '4. 설정(⚙)에서 API 키(Anthropic·OpenAI·Gemini 중 선택)를 입력하면 바로 사용할 수 있습니다.' + #13#10 + #13#10 +
+      'Anthropic 키 발급: https://console.anthropic.com',
       mbInformation, MB_OK);
   end;
 end;
