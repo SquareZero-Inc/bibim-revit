@@ -394,7 +394,6 @@ supabase-setup/
 
 # Build installer output
 Output/
-/docs/*
 
 # Installer signing artifacts
 *.pfx
