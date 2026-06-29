@@ -1,100 +1,88 @@
 # BIBIM_REVIT — Claude Working Notes
 
 ## Project
-Claude-powered Revit C# add-in (BYOK). Multi-target:
-- `net48` — Revit 2022–2024
-- `net8.0-windows` — Revit 2025–2026
-- `net10.0-windows` — Revit 2027+
+Claude/LLM-powered Revit C# add-in (BYOK) by SquareZero Inc., Apache-2.0. A WebView2 dockable panel runs a React/TS SPA; the C# backend drives an LLM tool-loop that generates C# and executes it inside Revit. Multi-target:
+
+| Revit | Build config | TargetFramework |
+|-------|--------------|-----------------|
+| 2022–2024 | `R2022`–`R2024` | `net48` |
+| 2025–2026 | `R2025`–`R2026` | `net8.0-windows` |
+| 2027+ | `R2027` | `net10.0-windows` |
+
+`R2026` is the default baseline (plain `Release`/`Debug` map to it). Current version: 1.1.2.
+
+## Layout
+```
+Bibim.Core/                       main add-in project (C# backend + embedded SPA)
+  BibimApp.cs                     Revit IExternalApplication entry; creates the ExternalEvent
+  BibimShowPanelCommand.cs        IExternalCommand — toggles the dockable pane
+  BibimDockablePanelProvider.cs   WebView2 host + ALL JS↔C# bridge handlers (4000+ lines — grep, never read whole)
+  BibimExecutionHandler.cs        IExternalEventHandler — runs generated code on Revit's main thread
+  WebView2Bridge.cs               injects the window.bibim send/on object into the WebView
+  DocumentChangeTracker.cs        counts elements touched during dry-run / commit
+  Common/                         ConfigService (rag_config + BYOK), Logger, ServiceContainer (custom DI)
+  Services/                       LLM orchestration core           → Bibim.Core/Services/CLAUDE.md
+    Providers/                    Anthropic/OpenAI/Gemini/Local    → Bibim.Core/Services/Providers/CLAUDE.md
+    Prompts/                      system-prompt + question builders
+  Models/                         DTOs: chat, session, task-flow, execution, code-library
+  Config/                         rag_config templates, release_notes_*.md, i18n/{en,kr}.json (C#-side strings)
+  Assets/Icons/                   ribbon / panel icons
+  frontend/                       React 19 + Vite 6 + TS 5.7 SPA   → Bibim.Core/frontend/CLAUDE.md
+  wwwroot/                        Vite build output — GENERATED, never hand-edit
+  redist/                         WebView2 bootstrapper (committed binary)
+Bibim.Core.Tests/                 xunit; links source files instead of ProjectReference (dodges Revit SDK)
+build.ps1                         5-stage build/sign pipeline
+Bibim.V3.sln                      2 projects: Core + Tests
+```
+
+## Setup
+| Need | How |
+|------|-----|
+| Build a single config | `dotnet build "Bibim.Core\Bibim.Core.csproj" -c R2026 -p:TargetFramework=net8.0-windows` |
+| Diagnose compile errors | Use the `dotnet build` above — **not** `build.ps1` (it auto-elevates admin and closes the window on error before `pause`) |
+| Frontend dev (HMR) | `cd Bibim.Core/frontend && npm install && npm run dev` |
+| Prerequisites | .NET 8 SDK (R2025–26 + tests + frontend tooling), Node 20+; .NET 10 SDK only for R2027; ≥1 Revit 2022–2027 at `C:\Program Files\Autodesk\Revit {year}`. Inno Setup 6 + signtool optional |
+| Revit SDK path override | `REVIT_SDK_PATH` env var (else csproj falls back to the default install path) |
 
 ## Build
-- Diagnose compile errors: `dotnet build "Bibim.Core\Bibim.Core.csproj" -c R2026 -p:TargetFramework=net8.0-windows`
-- `.\build.ps1` auto-elevates admin — errors close window before `pause`; always diagnose via dotnet directly
-- Build configs: `R2022`–`R2027`; full release: `.\build.ps1 -SkipFrontend -SkipTests`
-- R2027 requires .NET 10 SDK — build.ps1 skips gracefully if not installed
+`build.ps1` runs: **0** clean `bin/Release*`+`obj` (keeps `Output/`) → **1** frontend `npm install`+`npm run build` → **2** `dotnet build` per Revit year (dual output `Release/` KO + `Release_EN/` EN) → **3** `dotnet test` → **4** Inno Setup `BibimInstaller.iss`/`_EN.iss` → **5** `signtool` (skips gracefully if cert absent).
 
-## C# Gotchas
-- `volatile` not valid on `double`/`long` — use `Volatile.Read(ref field)` / `Volatile.Write(ref field, value)`
-- `BibimDockablePanelProvider.cs` is 4000+ lines — use Grep, don't read whole file
-- `RunRoslynCheck` in `BibimToolService.cs` runs BIBIM001-005 analyzers + `ApplyAutoFixes` — NOT just a compile check. Don't remove/bypass it as "redundant."
-- `HttpClient`: never create per-request with `using` — use shared static field. `_downloadHttpClient` in `BibimDockablePanelProvider`; `_httpClient` (static) in `LlmOrchestrationService`.
-- `RegisterAsyncHandler` lambdas are `Func<JObject, Task>` — removing `async` requires explicit `return Task.CompletedTask;` at every exit point.
+| Command | Effect |
+|---------|--------|
+| `.\build.ps1` | Full release: all Revit versions, both languages, installers, signing |
+| `.\build.ps1 -RevitConfig R2026` | One config only |
+| `.\build.ps1 -SkipFrontend -SkipTests` | Skip frontend rebuild + tests (also `-SkipInstaller`, `-Lang {ko\|en\|all}`) |
+| `dotnet test "Bibim.Core.Tests\Bibim.Core.Tests.csproj" --no-restore` | Tests only (net8.0, no Revit SDK needed) |
 
-## Key Files
-- `BibimDockablePanelProvider.cs` — all JS↔C# bridge handlers, LLM dispatch
-- `Common/ConfigService.cs` — rag_config.json loader, per-provider key save, migration, `GetActiveCredentials()`, `AvailableModels`
-- `Services/LlmOrchestrationService.cs` — provider-agnostic tool loop + Roslyn retry; delegates HTTP to `ILlmProvider`
-- `Services/Providers/` — `ILlmProvider` + `AnthropicProvider` / `OpenAIProvider` / `GeminiProvider` + `LlmProviderFactory`
-- `Services/BibimToolService.cs` — LLM tool definitions + Revit code execution
-- `Services/TokenTracker.cs` — local session token accumulators (input/output/cache_read/cache_create + `SessionCacheHitRatio`)
-- `Services/LocalRevitRagService.cs` — local BM25 RAG over RevitAPI.xml
-- `Services/BM25Engine.cs` — pure C# BM25, no NuGet deps
-- `Services/HistorySummariser.cs` — collapses dropped sliding-window turns into a synthetic "[Earlier session context]" message
-- `Services/Prompts/CodeGenSystemPrompt.cs` — code-gen system prompt builder. `Build(rev, isCodeGen, isFileOutput)` — `isFileOutput` gates the ~700t file-safety block. Has `LooksLikeFileOutputTask(text)` heuristic helper.
-- `Services/Prompts/CategoryQuestionTemplates.cs` — `BuildPlannerChecklist()` for compact planner question library + `PlannerGate.ShouldSkipPlanner()` heuristic gate
-- `build.ps1` — full build pipeline (frontend → C# → tests → Inno Setup → codesign)
-- `TOKEN_OPT_BACKLOG.md` — verified follow-up tickets (BIBIM-102 / 103 / 105 / 203 / 205 / 206 / etc.)
+R2027 skips automatically if the .NET 10 SDK is absent. Missing Revit installs are skipped (build guards on `RevitAPI.dll` existence).
 
-## Multi-Provider Architecture (v1.1+)
-- Canonical message format inside the orchestrator is **Anthropic-shaped JArray** (`{role, content[]}` with `tool_use` / `tool_result` blocks).
-- Each provider adapter converts to/from native shape:
-  - OpenAI: Responses API; tool_use → function_call; arguments come back as stringified JSON, parse via JObject.
-  - Gemini: `generateContent`; tool_use → functionCall; synthetic call_id (Gemini lacks one).
-- Provider routing is by model-id prefix (`claude-*` / `gpt-*` / `gemini-*`) — no separate `selected_provider` field.
-- Add a new model: extend `LlmProviderFactory.ResolveProviderForModel`, `ConfigService.AvailableModels`, and the `MODELS` array in `frontend/src/components/SettingsPanel.tsx`.
+## Architecture
+Rules to respect when working in this codebase. Subsystem detail lives in the subdirectory CLAUDE.md files linked above.
 
-## BYOK / API Keys
-- Per-provider keys in `Config/rag_config.json` under `api_keys.{anthropic|openai|gemini}_api_key`. Legacy `claude_api_key` is read as a fallback for Anthropic and mirrored on save (auto-migration with `.bak` backup).
-- Env var overrides: `ANTHROPIC_API_KEY` (or legacy `CLAUDE_API_KEY`), `OPENAI_API_KEY`, `GEMINI_API_KEY`.
-- UI: Settings panel (⚙) — three provider sections + a gated model selector. Bridge handlers `save_api_key` (anthropic), `save_openai_api_key`, `save_gemini_api_key` all call `ConfigService.SaveApiKeyForProvider`.
-- `BibimDockablePanelProvider.EnsureLlmService()` resolves the active provider via `ConfigService.GetActiveCredentials()` and constructs through `LlmProviderFactory.Create()`. **Reset `_llmService` and `_plannerLlmService` to null on any key/model save** so the next call picks up the new credentials.
-- No key for the active model → bridge sends a friendly guidance message before calling the LLM.
+- **C#↔JS bridge**: `WebView2Bridge.cs` injects the `window.bibim` object; backend handlers are registered in `BibimDockablePanelProvider` via `RegisterAsyncHandler(type, Func<JObject,Task>, swallowCancellation?)` (wraps in `Task.Run`, catches exceptions). The JS-side wrappers + the kebab-case message catalogue → `frontend/CLAUDE.md`.
+- **Generated-code execution is two-threaded**: a background thread compiles via Roslyn and enqueues an `ExecutionRequest`, then calls `BibimApp.ExecutionEvent.Raise()`; Revit's main thread runs `BibimExecutionHandler.Execute(UIApplication)`, which wraps the call in a `TransactionGroup` (dry-run → rolled back; commit → committed) and wakes the background thread via `TaskCompletionSource<ExecutionResult>`. **Never call the Revit API off the main thread** — Revit-context tools dispatch through the same ExternalEvent; non-Revit tools (`search_revit_api`, `run_roslyn_check`) run anywhere.
+- **Provider-agnostic LLM core**: the orchestrator's canonical message format is **Anthropic-shaped `JArray`** (`{role, content[]}` with `tool_use`/`tool_result` blocks); routing is by model-id prefix. Four providers (Anthropic/OpenAI/Gemini/Local) — conversion mechanics + per-provider quirks → `Services/Providers/CLAUDE.md`.
+- **BYOK / config**: `ConfigService` reads `rag_config.json` from the assembly's `Config/` dir but **writes to `%AppData%\BIBIM\rag_config.json`** (Program Files is read-only). Per-provider keys under `api_keys.{anthropic|openai|gemini|local}_api_key`; legacy `claude_api_key` auto-migrates (`.bak` backup). Env overrides: `ANTHROPIC_API_KEY` (or legacy `CLAUDE_API_KEY`), `OPENAI_API_KEY`, `GEMINI_API_KEY`, `BIBIM_LOCAL_LLM_{URL,API_KEY,MODEL}`. **On any key/model save, reset `_llmService` and `_plannerLlmService` to null** so the next call rebuilds with new credentials.
+- **DI**: custom static `ServiceContainer` (`Dictionary<Type,object>`) — `Microsoft.Extensions.DependencyInjection` is deliberately avoided (assembly-loading conflicts in the Revit host). Don't introduce it.
+- **HttpClient**: never `new HttpClient()` per request. Shared static fields only — `LlmOrchestrationService._httpClient`, and a separate `_downloadHttpClient` in `BibimDockablePanelProvider` for file downloads.
+- **C# language**: `Nullable` and `ImplicitUsings` are **disabled** — use explicit `using`s and `string` (not `string?`); `LangVersion=latest`. Every `.cs` opens with the `// Copyright (c) 2026 SquareZero Inc. — Licensed under Apache 2.0...` header. `volatile` is invalid on `double`/`long` — use `Volatile.Read/Write(ref field)`.
+- **Async handlers**: a `RegisterAsyncHandler` lambda is `Func<JObject,Task>` — if you drop `async`, add explicit `return Task.CompletedTask;` at **every** exit.
+- **Models**: `claude-sonnet-4-6` (default), `claude-opus-4-7`, `gpt-5.5`, `gemini-3.1-pro-preview`, `local`. Adding one touches three places (see `Services/Providers/CLAUDE.md`).
 
-## RAG (local, on by default)
-- `LocalRevitRagService.FetchAsync()` indexes `RevitAPI.xml` (+ `RevitAPIUI.xml`, `RevitAPIIFC.xml`) on first call (~0.5 s), caches for the process lifetime.
-- Available to all 4 models via the `search_revit_api` tool (definition in `BibimToolService.GetToolDefinitions`).
-- Diet (v1.0.2): `TopK=3`, `MaxChunkDisplayChars=1200`, `MaxMembersPerChunk=30`. ClassRemarks / member Remarks / ParamDescriptions dropped — signature + summary only.
-- Debug logs: `[INDEX_BUILD_DONE]`, `[HIT]`, `[MISS]` in `%APPDATA%\BIBIM\logs\bibim_debug.txt` (was `%USERPROFILE%\bibim_v3_debug.txt` pre-v1.1).
+## Testing
+| | |
+|---|---|
+| Runner | xunit 2.9.3, TargetFramework `net8.0` (no Revit SDK) |
+| Run all | `dotnet test "Bibim.Core.Tests\Bibim.Core.Tests.csproj" --no-restore` |
+| Scope | Roslyn compile/analyzer/auto-fix, API inspector, session compatibility, streaming cutoff, result formatting — pure C#, no LLM/Revit calls |
+| Fixtures | `Bibim.Core.Tests/TestData/`; `TestData/generated/` is gitignored + regenerated per run |
 
-## Token Optimization (v1.0.2)
-- **Anthropic prompt caching**: `cache_control: ephemeral` on system prompt + last tool definition (via `MarkLastToolForCaching` in `AnthropicProvider`). 5-min TTL.
-- **Cache telemetry**: `cache_read_input_tokens` / `cache_creation_input_tokens` parsed from all 3 providers' usage objects. `LlmResponse` / `CodeGenerationResult` / `TokenUsageInfo` carry both fields. `TokenTracker.Track()` accepts them and emits `hit_ratio` in log lines.
-- **Roslyn retry prune**: `LlmOrchestrationService.PrunePriorCompileAttempts()` removes prior failed attempts from `messages` before each retry — avoids re-sending ~700t per round. `BuildCompileErrorFeedback(includeRules)` only emits the 5-line Rules block on the first failure.
-- **Planner gate**: `PlannerGate.ShouldSkipPlanner(userText, hasActiveTask)` skips the ~2,500t planner LLM call for greetings/short non-actionable messages. Gate is conservative — misses default to running the planner.
-- **History summariser**: `HistorySummariser.Summarise(dropped, sessionContext)` compacts aged-out sliding-window turns into ~150t synthetic message. No LLM call — pure C# from task titles + clipped first/last user message.
-- **Conditional FileOutputRules**: `CodeGenSystemPrompt.Build(rev, isCodeGen, isFileOutput)` — only emit the ~700t file-safety block when `LooksLikeFileOutputTask(text)` matches. Caller passes a hint built from task title + summary + source message.
-- **Conditional context tools**: `BibimToolService.GetToolDefinitions(contextHint)` — `search_revit_api` + `run_roslyn_check` always; the 5 Revit-context tools (view/selection/parameters/family/levels) only when hint keywords match.
-- **Tool loop max_tokens 4096** (was 8192) — sufficient for any single C# block. Continuation handler covers rare truncation.
-- **Sliding window 10 turns** (was 20). Anything older → `HistorySummariser`.
+## Do Not
+- Hand-edit `Bibim.Core/wwwroot/` (Vite output) or commit `Bibim.Core/Config/rag_config.json` / `Bibim.Core/ClientBuildConfig.cs` — all gitignored (the last two hold secrets).
+- Read `BibimDockablePanelProvider.cs` whole — grep it (4000+ lines).
+- `git add -A` / `git add .` — stage files explicitly. No `--no-verify`. No force-push to `main`.
 
-## LLM Reliability (v1.0.2)
-- **Gemini JSON mode for planner**: `GeminiProvider` accepts `bool jsonMode` and emits `responseMimeType: "application/json"` when true. Used by `PlanUserIntentAsync` to prevent malformed/truncated JSON.
-- **Planner parse-failure retry**: `PlanUserIntentAsync` retries once with explicit "your previous response was not valid JSON" instruction if `TryParsePlan` returns null. Both must fail before fallback to direct chat.
-- **OpenAI JSON mode**: same `bool jsonMode` plumbing; sets `text.format.type = "json_object"` on Responses API requests.
-- **Anthropic**: `jsonMode` accepted but unused — Claude follows JSON-only prompt instructions reliably.
-- **GPT selection-priority rule**: `CodeGenSystemPrompt.BuildBasePrompt` has an explicit SELECTION-PRIORITY block instructing the model to use `uidoc.Selection.GetElementIds()` on EN/KR pointing language ("these doors", "이 도어들"), never falling back to model-wide `FilteredElementCollector`. Claude already followed this; GPT needed it explicit.
-
-## Sprint 0 Hotfixes (v1.0.2 c-patch — caught in real-user testing)
-Three latent multi-provider bugs that broke the task → question → codegen flow on **all three providers**. All fixed.
-- **BIBIM-001 — Anthropic 400 on tool loop**: `LlmOrchestrationService.GenerateWithToolsAsync` adds `"name"` to every tool_result block (kept for the Gemini adapter's `functionResponse` mapping). Anthropic's strict schema validator rejects unknown fields → `messages.N.content.0.tool_result.name: Extra inputs are not permitted`. **Fix**: `AnthropicProvider.SendNonStreamingAsync` strips `tool_result.name` from each message before sending. Provider-specific defence — Gemini adapter still gets to use the field.
-- **BIBIM-002 — OpenAI 400 on planner**: OpenAI Responses API rejects `text.format=json_object` mode unless an input message contains the literal word "json" (instructions-only doesn't count). **Fix**: `BuildPlannerInput` ends with `[Output format: respond with JSON only — no markdown, no commentary.]` — also reinforces JSON behaviour for Gemini.
-- **BIBIM-003 — Gemini planner non-JSON output**: the `-customtools` model variant is specialised for agentic workflows with registered tools and silently ignores `responseMimeType: application/json` when no tools are sent. **Fix**: model id swapped to vanilla `gemini-3.1-pro-preview` (Google's own guidance: use vanilla when <50% of requests involve tool calling). Auto-migration in `ConfigService.LoadRagConfig` rewrites stored configs on next launch with a `.bak`. `ExtractJsonObject` also strips ```json fences as a defensive secondary.
-
-## Model Selector UX (v1.0.2)
-- Each model in the Settings selector shows a response-speed indicator (⚡⚡⚡ fast / ⚡⚡ medium / ⚡ slow) with a localised tooltip. Sonnet 4.6 = ⚡⚡⚡, Opus/GPT-5.5 = ⚡⚡, Gemini 3.1 Pro = ⚡. Source of truth: `MODELS` array in `frontend/src/components/SettingsPanel.tsx`. Dynamo mirror lives in `Views/ApiKeySetupView.xaml`.
-
-## Loading-State Safety
-- `LlmOrchestrationService.SendMessageAsync` and `GenerateWithToolsAsync` both wrap the body in try/catch with `finally { OnStatusUpdate?.Invoke(null); }`. **Do not remove the finally block** — without it, an LLM error (429, network, etc.) leaves the chat panel stuck on "Generating response...".
-
-## Commit Workflow
-1. Scan changes: `git status --porcelain`
-2. Stage files explicitly — never `git add -A` or `git add .`
-4. Commit message format:
-   ```
-   <type>: <subject>
-
-   <body>
-
-   Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
-   ```
-   Types: `feat / fix / refactor / docs / chore / test`
-5. No `--no-verify`. No force push to main.
+## Commit
+- `git status --porcelain` first; if no changes, say so and stop.
+- Message: `<type>: <subject>` (`feat`/`fix`/`refactor`/`docs`/`chore`/`test`) + body + `Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>`.
+- Branches: `fix/...` or `feature/...`; PRs target `main`. Open an issue first for changes to core architecture or the LLM tool loop (see `CONTRIBUTING.md`).
