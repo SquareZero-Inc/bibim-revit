@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import React, { useState } from 'react';
+import { highlightCSharp } from '../utils/highlightCSharp';
 import { t } from '../i18n';
 
 interface Props {
@@ -8,7 +9,7 @@ interface Props {
 
 const COLLAPSE_THRESHOLD_LINES = 20;
 
-export default function CodeBlock({ code, language = 'csharp' }: Props) {
+function CodeBlock({ code, language = 'csharp' }: Props) {
   const [copied, setCopied] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
@@ -74,7 +75,7 @@ export default function CodeBlock({ code, language = 'csharp' }: Props) {
         color: 'var(--color-text-primary)',
         margin: 0,
       }}>
-        <code>{code}</code>
+        <code>{/^(csharp|cs|c#)$/i.test(language) ? highlightCSharp(code) : code}</code>
       </pre>
       {canExpand && !expanded && (
         <div
@@ -110,3 +111,5 @@ export default function CodeBlock({ code, language = 'csharp' }: Props) {
     </div>
   );
 }
+
+export default React.memo(CodeBlock);

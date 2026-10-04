@@ -27,6 +27,13 @@ namespace Bibim.Core
 
         public static bool IsEnglish => string.Equals(Current, English, StringComparison.OrdinalIgnoreCase);
 
+        /// <summary>
+        /// Single home for the en/kr string pick used across the app (provider
+        /// UiText, orchestrator status labels, prompt builders). Add new localized
+        /// literals through this instead of re-spelling the ternary per class.
+        /// </summary>
+        public static string Pick(string en, string kr) => IsEnglish ? en : kr;
+
         public static string Normalize(string language)
         {
             if (string.IsNullOrWhiteSpace(language)) return Default;

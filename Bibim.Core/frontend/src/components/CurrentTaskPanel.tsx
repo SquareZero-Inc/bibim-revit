@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { formatTime, t } from '../i18n';
 import type { TaskItem, TaskStage, TaskSummary } from '../types';
 
@@ -9,6 +9,8 @@ interface Props {
   onConfirm: () => void;
   onCancel: () => void;
   onApply: () => void;
+  /** Re-preview the task's existing code (e.g. after the user selects elements). */
+  onRerun?: () => void;
 }
 
 const stageColors: Record<TaskStage, string> = {
@@ -24,12 +26,36 @@ export default function CurrentTaskPanel({
   task,
   tasks,
   isBusy,
+  onRerun,
   onConfirm,
   onCancel,
   onApply,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
   const [showTaskList, setShowTaskList] = useState(false);
+  // Cancel used to fire instantly while Stop required a confirm — 2-click here.
+  // Armed state is task/stage-scoped and the timer is tracked, so a stale timer
+  // can't disarm a fresh arm and an armed click can't hit a swapped task.
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const cancelTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    setConfirmCancel(false);
+    if (cancelTimerRef.current) { clearTimeout(cancelTimerRef.current); cancelTimerRef.current = null; }
+  }, [task?.taskId, task?.stage]);
+  const handleCancelClick = () => {
+    if (confirmCancel) {
+      if (cancelTimerRef.current) { clearTimeout(cancelTimerRef.current); cancelTimerRef.current = null; }
+      setConfirmCancel(false);
+      onCancel();
+    } else {
+      if (cancelTimerRef.current) clearTimeout(cancelTimerRef.current);
+      setConfirmCancel(true);
+      cancelTimerRef.current = window.setTimeout(() => {
+        setConfirmCancel(false);
+        cancelTimerRef.current = null;
+      }, 3000);
+    }
+  };
 
   useEffect(() => {
     if (!task) {
@@ -133,6 +159,18 @@ export default function CurrentTaskPanel({
             {isBusy ? t('applying') : t('applyChanges')}
           </button>
         )}
+        {/* Run again: a finished task (e.g. run with nothing selected) re-previews its own
+            code with the current model/selection instead of starting over. */}
+        {task?.stage === 'completed' && task.canRerun && onRerun && (
+          <button
+            onClick={onRerun}
+            disabled={isBusy}
+            title={t('rerunTaskHint')}
+            style={{ ...secondaryButtonStyle, fontSize: 'var(--text-xs)', padding: '3px 10px', opacity: isBusy ? 0.6 : 1, cursor: isBusy ? 'not-allowed' : 'pointer' }}
+          >
+            {isBusy ? '⋯' : t('rerunTask')}
+          </button>
+        )}
         {task && (
           <button onClick={() => setExpanded((prev) => !prev)} style={ghostButtonStyle}>
             {expanded ? t('collapse') : t('details')}
@@ -146,6 +184,10 @@ export default function CurrentTaskPanel({
           flexDirection: 'column',
           gap: 'var(--space-sm)',
           padding: 'var(--space-md)',
+          // The card sits in the fixed footer above the input: a long result must scroll
+          // INSIDE the card instead of pushing the input and buttons off-screen.
+          maxHeight: '40vh',
+          overflowY: 'auto',
         }}>
           <div style={{
             fontSize: 'var(--text-sm)',
@@ -242,8 +284,12 @@ export default function CurrentTaskPanel({
                   >
                     {isBusy ? '⋯' : t('confirmTask')}
                   </button>
-                  <button onClick={onCancel} style={secondaryButtonStyle} disabled={isBusy}>
-                    {t('cancelTask')}
+                  <button
+                    onClick={handleCancelClick}
+                    style={{ ...secondaryButtonStyle, ...(confirmCancel ? { color: 'var(--color-error, #ef4444)', borderColor: 'var(--color-error, #ef4444)' } : {}) }}
+                    disabled={isBusy}
+                  >
+                    {confirmCancel ? t('confirmCancelTask') : t('cancelTask')}
                   </button>
                 </>
               )}
@@ -258,8 +304,12 @@ export default function CurrentTaskPanel({
                   >
                     {isBusy ? t('applying') : t('applyChanges')}
                   </button>
-                  <button onClick={onCancel} style={secondaryButtonStyle} disabled={isBusy}>
-                    {t('cancelTask')}
+                  <button
+                    onClick={handleCancelClick}
+                    style={{ ...secondaryButtonStyle, ...(confirmCancel ? { color: 'var(--color-error, #ef4444)', borderColor: 'var(--color-error, #ef4444)' } : {}) }}
+                    disabled={isBusy}
+                  >
+                    {confirmCancel ? t('confirmCancelTask') : t('cancelTask')}
                   </button>
                 </>
               )}
@@ -275,6 +325,8 @@ export default function CurrentTaskPanel({
           display: 'flex',
           flexDirection: 'column',
           gap: 'var(--space-xs)',
+          maxHeight: '30vh',
+          overflowY: 'auto',
         }}>
           <div style={sectionLabelStyle}>{t('currentSessionTasks')}</div>
           {tasks.length === 0 && (

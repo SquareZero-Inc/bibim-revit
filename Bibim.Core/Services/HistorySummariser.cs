@@ -48,12 +48,12 @@ namespace Bibim.Core
             // 2) First user message in the dropped window — anchors topic.
             var firstUser = dropped.FirstOrDefault(m => m.IsUser);
             if (firstUser != null && !string.IsNullOrWhiteSpace(firstUser.Text))
-                sb.AppendLine($"- session opened with: \"{Clip(firstUser.Text, MaxUserSnippetChars)}\"");
+                sb.AppendLine($"- session opened with: \"{Clip(AttachedDocument.InstructionOf(firstUser.Text), MaxUserSnippetChars)}\"");
 
             // 3) Last user message in the dropped window — anchors recency.
             var lastUser = dropped.LastOrDefault(m => m.IsUser);
             if (lastUser != null && lastUser != firstUser && !string.IsNullOrWhiteSpace(lastUser.Text))
-                sb.AppendLine($"- last user message before window: \"{Clip(lastUser.Text, MaxUserSnippetChars)}\"");
+                sb.AppendLine($"- last user message before window: \"{Clip(AttachedDocument.InstructionOf(lastUser.Text), MaxUserSnippetChars)}\"");
 
             string result = sb.ToString();
             return result.Length <= MaxSummaryChars

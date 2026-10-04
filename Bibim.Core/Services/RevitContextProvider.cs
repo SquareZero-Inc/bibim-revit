@@ -24,7 +24,7 @@ namespace Bibim.Core
     /// IMPORTANT: All methods must be called from the Revit main thread
     /// (via ExternalEvent or during IExternalCommand.Execute).
     /// </summary>
-    public class RevitContextProvider
+    public partial class RevitContextProvider
     {
         private UIApplication _uiApp;
 

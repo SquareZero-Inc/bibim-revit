@@ -6,6 +6,10 @@ interface Props {
   open: boolean;
   steps: ProgressStep[];
   onCancel: () => void;
+  /** Local unstick for a stale banner (no backend signal for minutes). */
+  onForceUnstick?: () => void;
+  /** True while streaming deltas are flowing — an alive stream is not stale. */
+  streamingActive?: boolean;
 }
 
 // Labels posted by C# backend when Revit is actively executing compiled code.
@@ -13,8 +17,10 @@ interface Props {
 const REVIT_EXECUTING_LABELS = [
   'Running preview...',
   'Applying changes...',
+  'Validating (preview)...',
   '미리보기를 실행하는 중...',
   '변경 사항 적용 중...',
+  '미리 검증 실행 중...',
 ];
 
 function isRevitExecuting(steps: ProgressStep[]): boolean {
@@ -28,9 +34,12 @@ function isRevitExecuting(steps: ProgressStep[]): boolean {
  * chat scroll container instead of a blocking overlay. Users can still scroll
  * and read prior messages while the AI is working.
  */
-export default function LoadingModal({ open, steps, onCancel }: Props) {
+export default function LoadingModal({ open, steps, onCancel, onForceUnstick, streamingActive }: Props) {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  // Watchdog: seconds since the steps array last CHANGED. A healthy long task
+  // updates its label; a stuck one doesn't — offer a local escape hatch.
+  const [staleFor, setStaleFor] = useState(0);
 
   useEffect(() => {
     setElapsed(0);
@@ -38,6 +47,13 @@ export default function LoadingModal({ open, steps, onCancel }: Props) {
     const id = setInterval(() => setElapsed(s => s + 1), 1000);
     return () => clearInterval(id);
   }, [open]);
+
+  useEffect(() => {
+    setStaleFor(0);
+    if (!open) return;
+    const id = setInterval(() => setStaleFor(s => s + 1), 1000);
+    return () => clearInterval(id);
+  }, [open, steps]);
 
   if (!open) return null;
 
@@ -56,6 +72,12 @@ export default function LoadingModal({ open, steps, onCancel }: Props) {
   };
 
   const handleConfirmCancel = () => setConfirmOpen(false);
+
+  // Escape hatch ONLY when it can't hurt: not while Revit executes (cancel is
+  // a no-op there and unlocking Apply mid-commit is unsafe), not while deltas
+  // are visibly flowing, and only after longer than a worst-case single LLM
+  // call (reasoning models legitimately run 4-5 min with a frozen label).
+  const showUnstick = staleFor >= 360 && !!onForceUnstick && !revitRunning && !streamingActive;
 
   return (
     <>
@@ -98,6 +120,15 @@ export default function LoadingModal({ open, steps, onCancel }: Props) {
           </span>
         )}
 
+        {showUnstick && (
+          <button
+            onClick={onForceUnstick}
+            title={t('unstickTooltip')}
+            style={{ ...cancelStyle, color: 'var(--color-warning, #f59e0b)', borderColor: 'var(--color-warning, #f59e0b)' }}
+          >
+            {t('unstick')}
+          </button>
+        )}
         <button onClick={handleStopClick} style={cancelStyle}>{t('stop')}</button>
       </div>
 

@@ -1,19 +1,35 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
+import { isImeComposing } from '../utils/ime';
 import { getContextSuggestions, t } from '../i18n';
 import type { ContextSuggestion } from '../types';
+import {
+  ATTACH_ACCEPT, readAttachment, toMessageAttachment,
+  type AttachError, type PendingAttachment,
+} from '../utils/attachment';
+import AttachmentChip, { PaperclipIcon } from './AttachmentChip';
 
 interface Props {
-  onSend: (text: string) => void;
+  onSend: (text: string, attachment?: PendingAttachment) => void;
   onCancel: () => void;
   disabled: boolean;
   isBusy: boolean;
 }
 
+const ATTACH_ERROR_KEY: Record<AttachError, 'attachErrorUnsupported' | 'attachErrorTooLarge' | 'attachErrorUnreadable'> = {
+  unsupported: 'attachErrorUnsupported',
+  tooLarge: 'attachErrorTooLarge',
+  unreadable: 'attachErrorUnreadable',
+};
+
 export default function ChatInput({ onSend, onCancel, disabled, isBusy }: Props) {
   const [text, setText] = useState('');
   const [suggestions, setSuggestions] = useState<ContextSuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [attachment, setAttachment] = useState<PendingAttachment | null>(null);
+  const [attachNotice, setAttachNotice] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
 
   // Auto-resize textarea based on content
   useEffect(() => {
@@ -22,6 +38,56 @@ export default function ChatInput({ onSend, onCancel, disabled, isBusy }: Props)
     el.style.height = 'auto';
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [text]);
+
+  const attachFiles = useCallback(async (files: FileList | File[] | null) => {
+    const list = files ? Array.from(files) : [];
+    if (list.length === 0) return;
+    const result = await readAttachment(list[0]);   // single file (spec P0)
+    if (typeof result === 'string') {
+      setAttachNotice(t(ATTACH_ERROR_KEY[result]));
+      return;
+    }
+    setAttachment(result);
+    setAttachNotice(list.length > 1 ? t('attachOnlyFirst') : null);
+    inputRef.current?.focus();
+  }, []);
+
+  // Drag & drop anywhere in the panel. The window-level preventDefault also stops
+  // WebView2 from navigating away to a dropped file.
+  useEffect(() => {
+    let depth = 0;
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+    const onDragEnter = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      depth++;
+      setDragActive(true);
+    };
+    const onDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = hasFiles(e) ? 'copy' : 'none';
+    };
+    const onDragLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (depth === 0) setDragActive(false);
+    };
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      depth = 0;
+      setDragActive(false);
+      if (e.dataTransfer?.files?.length) void attachFiles(e.dataTransfer.files);
+    };
+    window.addEventListener('dragenter', onDragEnter);
+    window.addEventListener('dragover', onDragOver);
+    window.addEventListener('dragleave', onDragLeave);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragenter', onDragEnter);
+      window.removeEventListener('dragover', onDragOver);
+      window.removeEventListener('dragleave', onDragLeave);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [attachFiles]);
 
   const handleChange = useCallback((value: string) => {
     setText(value);
@@ -50,17 +116,27 @@ export default function ChatInput({ onSend, onCancel, disabled, isBusy }: Props)
     inputRef.current?.focus();
   }, [text]);
 
+  const canSend = !disabled && (Boolean(text.trim()) || attachment != null);
+
+  const submit = () => {
+    if (!canSend) return;
+    // Empty instruction + document → the spec's default instruction (backend applies
+    // the same default, this keeps the bubble and the request identical).
+    const instruction = text.trim() || (attachment ? t('attachDefaultInstruction') : '');
+    onSend(instruction, attachment ?? undefined);
+    setText('');
+    setAttachment(null);
+    setAttachNotice(null);
+    setShowSuggestions(false);
+    if (inputRef.current) {
+      inputRef.current.style.height = 'auto';
+    }
+  };
+
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !isImeComposing(e)) {
       e.preventDefault();
-      if (text.trim() && !disabled) {
-        onSend(text.trim());
-        setText('');
-        setShowSuggestions(false);
-        if (inputRef.current) {
-          inputRef.current.style.height = 'auto';
-        }
-      }
+      submit();
     }
     if (e.key === 'Escape') {
       setShowSuggestions(false);
@@ -105,19 +181,63 @@ export default function ChatInput({ onSend, onCancel, disabled, isBusy }: Props)
         </div>
       )}
 
+      {(attachment || attachNotice) && (
+        <div style={{
+          display: 'flex', flexDirection: 'column', gap: 4,
+          marginBottom: 'var(--space-xs)',
+        }}>
+          {attachment && (
+            <AttachmentChip
+              attachment={toMessageAttachment(attachment)}
+              onRemove={() => { setAttachment(null); setAttachNotice(null); }}
+            />
+          )}
+          {attachNotice && (
+            <div style={{ color: 'var(--color-error)', fontSize: 'var(--text-xs)' }}>{attachNotice}</div>
+          )}
+        </div>
+      )}
+
       <div style={{
         display: 'flex', alignItems: 'flex-end', gap: 'var(--space-sm)',
         padding: 'var(--space-sm)',
         background: 'var(--color-bg-input)',
-        border: '1px solid var(--color-border)',
+        border: dragActive ? '1px dashed var(--color-accent)' : '1px solid var(--color-border)',
         borderRadius: 'var(--radius-lg)',
       }}>
+        <input
+          ref={fileRef}
+          type="file"
+          accept={ATTACH_ACCEPT}
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            void attachFiles(e.target.files);
+            e.target.value = '';   // re-selecting the same file must fire again
+          }}
+        />
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          disabled={disabled}
+          title={t('attachTooltip')}
+          aria-label={t('attachTooltip')}
+          style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            padding: '4px',
+            background: 'none', border: 'none',
+            color: attachment ? 'var(--color-accent)' : 'var(--color-text-muted)',
+            cursor: disabled ? 'default' : 'pointer',
+            opacity: disabled ? 0.5 : 1,
+          }}
+        >
+          <PaperclipIcon />
+        </button>
         <textarea
           ref={inputRef}
           value={text}
           onChange={(e) => handleChange(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={t('inputPlaceholder')}
+          placeholder={dragActive ? t('attachDropHere') : attachment ? t('attachInstructionPlaceholder') : t('inputPlaceholder')}
           disabled={disabled}
           rows={1}
           style={{
@@ -141,22 +261,14 @@ export default function ChatInput({ onSend, onCancel, disabled, isBusy }: Props)
           </button>
         ) : (
           <button
-            onClick={() => {
-              if (text.trim()) {
-                onSend(text.trim());
-                setText('');
-                if (inputRef.current) {
-                  inputRef.current.style.height = 'auto';
-                }
-              }
-            }}
-            disabled={disabled || !text.trim()}
+            onClick={submit}
+            disabled={!canSend}
             style={{
               padding: 'var(--space-xs) var(--space-md)',
-              background: text.trim() ? 'var(--color-accent)' : 'var(--color-bg-tertiary)',
+              background: canSend ? 'var(--color-accent)' : 'var(--color-bg-tertiary)',
               border: 'none', borderRadius: 'var(--radius-md)',
-              color: text.trim() ? '#fff' : 'var(--color-text-muted)',
-              fontSize: 'var(--text-sm)', cursor: text.trim() ? 'pointer' : 'default',
+              color: canSend ? '#fff' : 'var(--color-text-muted)',
+              fontSize: 'var(--text-sm)', cursor: canSend ? 'pointer' : 'default',
             }}
           >
             {t('send')}

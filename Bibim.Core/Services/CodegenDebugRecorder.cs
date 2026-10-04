@@ -53,7 +53,9 @@ namespace Bibim.Core
                 lock (_lock)
                 {
                     Directory.CreateDirectory(directory);
-                    File.WriteAllText(Path.Combine(directory, fileName), content ?? string.Empty);
+                    // Attached document bodies are session-memory only (never on disk).
+                    File.WriteAllText(Path.Combine(directory, fileName),
+                        AttachedDocument.Redact(content ?? string.Empty));
                 }
             }
             catch (Exception ex)

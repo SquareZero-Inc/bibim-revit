@@ -70,13 +70,16 @@ namespace Bibim.Core
             "SetElementOverrides", "SetCategoryOverrides"
         };
 
-        // Revit 2024+ removed/changed APIs
+        // Revit 2024+ removed/changed APIs. Matched by member NAME only, so every entry must be
+        // wrong on every receiver that has it. Element.LevelId and Parameter.AsInteger() used to
+        // be listed but exist unchanged in the 2024 and 2026 APIs (verified against RevitAPI.dll)
+        // — flagging them pushed the model to WALL_BASE_CONSTRAINT on doors and to
+        // AsValueString() where an int was needed. ElementId.IntegerValue is deprecated in 2024
+        // and removed in 2026; WorksetId.IntegerValue is unaffected (see ApplyAutoFixes callers).
         private static readonly Dictionary<string, string> DeprecatedApiReplacements =
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             { "IntegerValue", "Value" },
-            { "LevelId", "get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT)" },
-            { "AsInteger", "AsValueString" }
         };
 
         // Known dangerous XYZ operations
@@ -142,31 +145,16 @@ namespace Bibim.Core
 
             if (apply2024Fixes)
             {
-                // Fix 1: IntegerValue → Value
+                // Fix 1: ElementId.IntegerValue → Value. Text-based, so it also rewrites
+                // WorksetId.IntegerValue (which has no Value) — callers must keep the fix only
+                // when it makes a failing compile pass (BibimToolService.RunRoslynCheck).
                 if (code.Contains(".IntegerValue"))
                 {
                     code = code.Replace(".IntegerValue", ".Value");
                     result.AppliedFixes.Add("BIBIM004-FIX: IntegerValue → Value");
                 }
 
-                // Fix 2: AsInteger() → AsValueString() (common Revit 2024+ change)
-                if (code.Contains(".AsInteger()"))
-                {
-                    code = code.Replace(".AsInteger()", ".AsValueString()");
-                    result.AppliedFixes.Add("BIBIM004-FIX: AsInteger() → AsValueString()");
-                }
-
-                // Fix 3: element.LevelId → element.get_Parameter(BuiltInParameter.WALL_BASE_CONSTRAINT).AsElementId()
-                if (code.Contains(".LevelId") && !code.Contains("get_Parameter"))
-                {
-                    code = System.Text.RegularExpressions.Regex.Replace(
-                        code,
-                        @"(\w+)\.LevelId\b",
-                        "$1.get_Parameter(Autodesk.Revit.DB.BuiltInParameter.WALL_BASE_CONSTRAINT).AsElementId()");
-                    result.AppliedFixes.Add("BIBIM004-FIX: .LevelId → get_Parameter(WALL_BASE_CONSTRAINT).AsElementId()");
-                }
-
-                // Fix 4: new CurveLoop(list) — flag only
+                // Fix 2: new CurveLoop(list) — flag only
                 if (code.Contains("new CurveLoop(") && code.Contains("CurveLoop(") &&
                     !code.Contains("new CurveLoop()"))
                 {
@@ -464,8 +452,9 @@ namespace Bibim.Core
                     diagnostics.Add(new AnalyzerDiagnostic
                     {
                         Id = "BIBIM004",
-                        Message = $"'{memberName}' is removed/changed in Revit 2024+. Use '{replacement}' instead.",
-                        Severity = major >= 2024 ? AnalyzerSeverity.Error : AnalyzerSeverity.Warning,
+                        Message = $"ElementId.{memberName} is deprecated in Revit 2024 and removed in 2026. Use '{replacement}' (long) instead. (WorksetId.{memberName} is unaffected.)",
+                        // Compiles (obsolete) on 2024/2025; only 2026+ is a hard error.
+                        Severity = major >= 2026 ? AnalyzerSeverity.Error : AnalyzerSeverity.Warning,
                         Line = lineSpan.StartLinePosition.Line + 1,
                         Column = lineSpan.StartLinePosition.Character + 1,
                         SuggestedFix = replacement

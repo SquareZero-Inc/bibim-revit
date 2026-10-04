@@ -31,6 +31,10 @@ namespace Bibim.Core
                 "System",
                 "System.Linq",
                 "System.Collections.Generic",
+                // Generated bodies may not add using directives, and Path/File/StringBuilder
+                // were a recurring compile failure. No clash with Revit type names on 2024/2026.
+                "System.IO",
+                "System.Text",
                 "Autodesk.Revit.DB",
                 "Autodesk.Revit.UI",
                 "Autodesk.Revit.DB.Architecture",

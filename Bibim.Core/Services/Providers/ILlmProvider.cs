@@ -17,35 +17,32 @@ namespace Bibim.Core
     ///   [ { name, description, input_schema } ]
     ///
     /// Responses are returned in Anthropic-shaped JObject:
-    ///   { content: [...], stop_reason, usage }
+    ///   { content: [...], stop_reason, usage, model }
     /// This keeps the orchestrator (LlmOrchestrationService) provider-agnostic
     /// without forcing a heavy refactor of its tool-loop logic.
     /// </summary>
     public interface ILlmProvider
     {
-        /// <summary>"anthropic" / "openai" / "gemini"</summary>
+        /// <summary>"anthropic" / "openai" / "local"</summary>
         string ProviderName { get; }
 
-        /// <summary>Concrete model id, e.g. "claude-sonnet-4-6" / "gpt-5.5" / "gemini-3.1-pro-preview".</summary>
+        /// <summary>Concrete model id, e.g. "claude-sonnet-5" / "gpt-6-sol".</summary>
         string ModelId { get; }
 
         /// <summary>
-        /// Send a non-streaming request, optionally with tools. Used by the agent tool loop.
-        /// Returns an Anthropic-shaped response JObject so the orchestrator stays
-        /// uniform across providers.
+        /// Send one request (optionally with tools) and return the COMPLETE assistant
+        /// message in Anthropic shape. Providers may stream on the wire — Anthropic does
+        /// whenever <see cref="LlmRequestOptions.OnProgress"/> is set or the output
+        /// ceiling is large — but the caller always receives the assembled message.
+        /// Used by the agent tool loop and the Task Planner.
         /// </summary>
-        /// <param name="jsonMode">When true, request the model produce JSON-only
-        /// output. Maps to provider-native flags: OpenAI <c>response_format</c>,
-        /// Gemini <c>responseMimeType: application/json</c>. Anthropic ignores
-        /// this — Claude follows JSON-only prompt instructions reliably without
-        /// a native flag. Used by the Task Planner.</param>
-        Task<JObject> SendNonStreamingAsync(
+        Task<JObject> CreateMessageAsync(
             JArray messages,
             string systemPrompt,
             JArray tools,
             CancellationToken ct,
             int maxTokens,
-            bool jsonMode = false);
+            LlmRequestOptions options = null);
 
         /// <summary>
         /// Send a streaming chat request (no tools). The provider invokes
@@ -56,16 +53,47 @@ namespace Bibim.Core
             string systemPrompt,
             Action<string> onTextDelta,
             CancellationToken ct,
-            int maxTokens);
+            int maxTokens,
+            LlmRequestOptions options = null);
     }
 
     /// <summary>
-    /// Result of a streaming call: full assembled text plus token usage. When the
-    /// upstream stream emits structured blocks (e.g. Gemini SSE chunks with
-    /// functionCall parts), providers may stash them in <see cref="ToolUseBlocks"/>
-    /// for an orchestrator that wires streaming through tool-use. Today the
-    /// orchestrator only consumes <see cref="FullText"/>; the block buffer exists
-    /// so providers can future-proof streaming without later interface churn.
+    /// Per-request knobs, mapped by each adapter to its native parameters. Every field is
+    /// optional; a provider ignores what its model does not support (see
+    /// <see cref="ModelCatalog"/> capabilities).
+    /// </summary>
+    public sealed class LlmRequestOptions
+    {
+        /// <summary>
+        /// "low" / "medium" / "high". Anthropic: <c>output_config.effort</c>.
+        /// OpenAI: <c>reasoning.effort</c>. Local: ignored.
+        /// </summary>
+        public string Effort { get; set; }
+
+        /// <summary>
+        /// JSON schema the response text must satisfy. Anthropic:
+        /// <c>output_config.format</c>; OpenAI: <c>text.format</c> json_schema (strict).
+        /// Local servers fall back to <see cref="JsonMode"/>.
+        /// </summary>
+        public JObject ResponseSchema { get; set; }
+
+        /// <summary>Schema name (OpenAI requires one).</summary>
+        public string ResponseSchemaName { get; set; }
+
+        /// <summary>Ask for JSON-only output where no schema mode exists (local servers).</summary>
+        public bool JsonMode { get; set; }
+
+        /// <summary>
+        /// Live progress text while the model works: streamed prose and reasoning
+        /// summaries. (kind, text) — kind is "text" or "thinking". Setting this makes the
+        /// Anthropic adapter stream the request and request summarized thinking on models
+        /// that think by default.
+        /// </summary>
+        public Action<string, string> OnProgress { get; set; }
+    }
+
+    /// <summary>
+    /// Result of a streaming call: full assembled text plus token usage.
     /// </summary>
     public class StreamResult
     {
@@ -75,12 +103,7 @@ namespace Bibim.Core
         public int CachedInputTokens { get; set; }
         public int CacheCreationInputTokens { get; set; }
 
-        /// <summary>
-        /// Tool-use blocks emitted during the stream, in Anthropic-shaped form
-        /// (<c>{type:"tool_use", id, name, input, ...}</c>). Provider-specific
-        /// fields (e.g. <c>_geminiThoughtSignature</c>) are preserved so the
-        /// orchestrator can echo them back on the next turn.
-        /// </summary>
-        public Newtonsoft.Json.Linq.JArray ToolUseBlocks { get; set; }
+        /// <summary>Provider stop reason when known ("end_turn", "max_tokens", "refusal").</summary>
+        public string StopReason { get; set; }
     }
 }

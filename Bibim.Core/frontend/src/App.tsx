@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { t } from './i18n';
 import { useChat } from './hooks/useChat';
 import { sendToBackend } from './bridge';
@@ -9,10 +9,26 @@ import CodeDetailModal from './components/CodeDetailModal';
 import SettingsPanel from './components/SettingsPanel';
 import RerunModal from './components/RerunModal';
 
+// Below this width the two 280px drawers overlay instead of squeezing the chat.
+const NARROW_BREAKPOINT = 640;
+
 export default function App() {
   const chat = useChat();
   const [showHistory, setShowHistory] = useState(false);
   const [showCodeLibrary, setShowCodeLibrary] = useState(false);
+  // Narrow Revit dock: two 280px inline drawers crushed the chat column to
+  // nothing (root is overflow:hidden). Below this width drawers overlay.
+  const [narrow, setNarrow] = useState(window.innerWidth < NARROW_BREAKPOINT);
+  useEffect(() => {
+    const onResize = () => setNarrow(window.innerWidth < NARROW_BREAKPOINT);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const drawerWrapStyle: React.CSSProperties = narrow
+    ? { position: 'absolute', top: 0, bottom: 0, left: 0, width: 280, zIndex: 30,
+        boxShadow: '4px 0 16px rgba(0,0,0,0.35)', background: 'var(--color-bg-primary)' }
+    : { width: 280, flexShrink: 0 };
   const [rerunDraft, setRerunDraft] = useState<{
     sourceSessionId: string;
     sourceTitle: string;
@@ -30,9 +46,16 @@ export default function App() {
       display: 'flex',
       height: '100%',
       overflow: 'hidden',
+      position: 'relative',
     }}>
+      {narrow && (showHistory || showCodeLibrary) && (
+        <div
+          onClick={() => { setShowHistory(false); setShowCodeLibrary(false); }}
+          style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)', zIndex: 25 }}
+        />
+      )}
       {showHistory && (
-        <div style={{ width: 280, flexShrink: 0 }}>
+        <div style={drawerWrapStyle}>
           <HistoryPanel
             sessions={chat.sessions}
             activeId={chat.activeSessionId}
@@ -49,7 +72,7 @@ export default function App() {
       )}
 
       {showCodeLibrary && (
-        <div style={{ width: 280, flexShrink: 0 }}>
+        <div style={drawerWrapStyle}>
           <CodeLibraryPanel
             snippets={chat.codeSnippets}
             folders={chat.codeFolders}
@@ -75,7 +98,7 @@ export default function App() {
           flexShrink: 0,
         }}>
           <button
-            onClick={() => setShowHistory((prev) => !prev)}
+            onClick={() => { setShowCodeLibrary(false); setShowHistory((prev) => !prev); }}
             style={{
               background: 'none',
               border: 'none',
@@ -89,7 +112,7 @@ export default function App() {
             Menu
           </button>
           <button
-            onClick={() => setShowCodeLibrary((prev) => !prev)}
+            onClick={() => { setShowHistory(false); setShowCodeLibrary((prev) => !prev); }}
             style={{
               background: 'none',
               border: 'none',
@@ -127,10 +150,6 @@ export default function App() {
               openaiMasked={chat.openaiMasked}
               onSaveOpenAiKey={chat.saveOpenAiApiKey}
               openaiSaveResult={chat.openaiSaveResult}
-              geminiConfigured={chat.geminiConfigured}
-              geminiMasked={chat.geminiMasked}
-              onSaveGeminiKey={chat.saveGeminiApiKey}
-              geminiSaveResult={chat.geminiKeySaveResult}
               localConfigured={chat.localConfigured}
               localServerUrl={chat.localServerUrl}
               localModelName={chat.localModelName}
@@ -259,6 +278,8 @@ export default function App() {
           appVersion={chat.appVersion}
           onSend={chat.sendMessage}
           onCancel={chat.cancelStreaming}
+          onForceUnstick={chat.forceUnstick}
+          isStreaming={chat.isStreaming}
           onTaskConfirm={chat.confirmTask}
           onTaskCancel={chat.cancelTask}
           onApply={chat.executeCode}

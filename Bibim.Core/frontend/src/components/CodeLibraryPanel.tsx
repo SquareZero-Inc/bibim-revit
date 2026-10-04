@@ -1,4 +1,5 @@
 import React, { useState, type CSSProperties } from 'react';
+import { isImeComposing } from '../utils/ime';
 import { formatDateShort, t } from '../i18n';
 import type { CodeSnippetInfo, CodeFolder } from '../types';
 
@@ -221,7 +222,7 @@ function FolderItem({
             onChange={(e) => setRenameValue(e.target.value)}
             onBlur={handleRenameSubmit}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') handleRenameSubmit();
+              if (e.key === 'Enter' && !isImeComposing(e)) handleRenameSubmit();
               if (e.key === 'Escape') setRenaming(false);
             }}
             onClick={(e) => e.stopPropagation()}
@@ -351,7 +352,7 @@ function SnippetItem({ snippet, folders, onSelect, onRename, onDelete, onMove }:
             onChange={(e) => setRenameValue(e.target.value)}
             onBlur={handleRenameSubmit}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') handleRenameSubmit();
+              if (e.key === 'Enter' && !isImeComposing(e)) handleRenameSubmit();
               if (e.key === 'Escape') setRenaming(false);
             }}
             style={{ ...inlineInputStyle, width: '100%', boxSizing: 'border-box' }}

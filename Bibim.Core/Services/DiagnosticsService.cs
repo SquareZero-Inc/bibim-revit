@@ -93,14 +93,10 @@ namespace Bibim.Core
 
         private static readonly (string Name, string TypeProbe)[] SdkProbes = new[]
         {
-            ("Anthropic SDK",                "Anthropic.AnthropicClient"),
             ("Roslyn (CodeAnalysis)",         "Microsoft.CodeAnalysis.CSharp.CSharpCompilation"),
             ("WebView2",                      "Microsoft.Web.WebView2.Core.CoreWebView2Environment"),
-
             ("Newtonsoft.Json",               "Newtonsoft.Json.JsonConvert"),
-            ("System.Text.Json",              "System.Text.Json.JsonSerializer"),
-            ("Markdig",                       "Markdig.Markdown"),
-            ("Microsoft.Extensions.DI",       "Microsoft.Extensions.DependencyInjection.ServiceCollection"),
+            ("ProtectedData (DPAPI)",         "System.Security.Cryptography.ProtectedData"),
         };
 
         private static List<DiagCheck> CheckSdkLoads()

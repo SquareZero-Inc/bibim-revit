@@ -22,6 +22,37 @@ namespace Bibim.Core
     }
 
     /// <summary>
+    /// Structured task category emitted by the planner (v1.2.0). Replaces the keyword
+    /// heuristics that guessed "is this an export / a view change / a model edit" from
+    /// free text — the heuristics stay only as a fallback when the category is absent.
+    /// </summary>
+    public static class TaskCategories
+    {
+        public const string Query = "query";                 // read / count / list / inspect
+        public const string Export = "export";               // writes files; model unchanged
+        public const string ModelEdit = "model_edit";        // change existing elements / values
+        public const string Create = "create";               // new elements / views / sheets / parameters
+        public const string Delete = "delete";               // remove elements
+        public const string ViewSelection = "view_selection"; // active view / selection / visibility
+        public const string Annotation = "annotation";       // tags / text / dimensions / clouds
+        public const string Other = "other";
+
+        public static readonly string[] All =
+            { Query, Export, ModelEdit, Create, Delete, ViewSelection, Annotation, Other };
+
+        /// <summary>Success legitimately leaves zero DocumentChanged deltas.</summary>
+        public static bool IsZeroDeltaByDesign(string category) =>
+            category == Export || category == ViewSelection || category == Query;
+
+        /// <summary>Success must change model elements.</summary>
+        public static bool ExpectsModelChange(string category) =>
+            category == ModelEdit || category == Create || category == Delete || category == Annotation;
+
+        public static bool IsKnown(string category) =>
+            !string.IsNullOrEmpty(category) && Array.IndexOf(All, category) >= 0 && category != Other;
+    }
+
+    /// <summary>
     /// Structured question with selectable options for the Question Card UI.
     /// Supports single-select, multi-select, and free-text input.
     /// </summary>
@@ -111,6 +142,10 @@ namespace Bibim.Core
         [JsonProperty("kind")]
         public string Kind { get; set; } = TaskKinds.Write;
 
+        /// <summary>Planner-emitted <see cref="TaskCategories"/> value (null on older sessions).</summary>
+        [JsonProperty("category")]
+        public string Category { get; set; }
+
         [JsonProperty("stage")]
         public string Stage { get; set; } = TaskStages.NeedsDetails;
 
@@ -139,6 +174,13 @@ namespace Bibim.Core
 
         [JsonProperty("sourceUserMessage")]
         public string SourceUserMessage { get; set; }
+
+        /// <summary>
+        /// Document attached to the message that created/updated this task. Session MEMORY
+        /// only — [JsonIgnore] keeps the body out of the saved session context.
+        /// </summary>
+        [JsonIgnore]
+        public AttachedDocument Attachment { get; set; }
 
         [JsonProperty("collectedInputs")]
         public List<string> CollectedInputs { get; set; } = new List<string>();
@@ -173,6 +215,9 @@ namespace Bibim.Core
         [JsonProperty("taskKind")]
         public string TaskKind { get; set; }
 
+        [JsonProperty("taskCategory")]
+        public string TaskCategory { get; set; }
+
         [JsonProperty("taskRelation")]
         public string TaskRelation { get; set; }
 
@@ -193,5 +238,17 @@ namespace Bibim.Core
 
         [JsonProperty("shouldAutoRun")]
         public bool ShouldAutoRun { get; set; }
+
+        /// <summary>
+        /// Planner LLM spend for this plan (first call + JSON-retry if any). Not part
+        /// of the model's JSON contract — filled by PlanUserIntentAsync so planner-
+        /// terminal messages (question cards, planner chat replies) report real token
+        /// usage instead of 0/0.
+        /// </summary>
+        [JsonIgnore]
+        public int PlannerInputTokens { get; set; }
+
+        [JsonIgnore]
+        public int PlannerOutputTokens { get; set; }
     }
 }

@@ -40,6 +40,14 @@ namespace Bibim.Core
         internal static string DetectedRevitVersion { get; private set; }
 
         /// <summary>
+        /// Active document identity, maintained on the Revit MAIN thread via
+        /// ViewActivated (document switches always activate a view). Read from
+        /// background threads for creation-time task→document stamping.
+        /// </summary>
+        internal static string CurrentActiveDocTitle { get; private set; }
+        internal static string CurrentActiveDocPath { get; private set; }
+
+        /// <summary>
         /// Cached result of the startup version check. Null if no update needed or not yet checked.
         /// </summary>
         internal static VersionCheckResult LastVersionCheckResult { get; set; }
@@ -151,6 +159,27 @@ namespace Bibim.Core
                 {
                     CurrentUiApp = uiApp;
 
+                    // Active-document identity cache (main thread). ViewActivated
+                    // fires on every document/view switch, so background code (task
+                    // creation) can stamp the target document without a Dispatcher hop.
+                    try
+                    {
+                        // Subscribe FIRST — if the initial capture throws we still
+                        // track future switches. DocumentClosed refreshes the cache
+                        // when the last document closes (ViewActivated alone leaves
+                        // a dangling identity that would hard-block execution via
+                        // the executor's document-mismatch guard).
+                        uiApp.ViewActivated += OnViewActivated;
+                        uiApp.Application.DocumentClosed += OnRevitDocumentClosed;
+                        var activeDoc = uiApp.ActiveUIDocument?.Document;
+                        CurrentActiveDocTitle = activeDoc?.Title;
+                        CurrentActiveDocPath = activeDoc?.PathName;
+                    }
+                    catch (Exception vaEx)
+                    {
+                        Logger.Log("BibimApp", $"ViewActivated hook skipped (non-fatal): {vaEx.Message}");
+                    }
+
                     // Capture runtime Revit version (e.g., "2025")
                     try
                     {
@@ -179,7 +208,7 @@ namespace Bibim.Core
                         Logger.Log("BibimApp", "RevitContextProvider received UIApplication");
                     }
 
-                    // Fire-and-forget version check
+                    // Fire-and-forget version check.
                     Task.Run(async () =>
                     {
                         try
@@ -212,7 +241,11 @@ namespace Bibim.Core
             try
             {
                 if (CurrentUiApp != null)
+                {
                     CurrentUiApp.Application.DocumentChanged -= OnRevitDocumentChanged;
+                    CurrentUiApp.Application.DocumentClosed -= OnRevitDocumentClosed;
+                    CurrentUiApp.ViewActivated -= OnViewActivated;
+                }
             }
             catch (Exception ex)
             {
@@ -222,6 +255,39 @@ namespace Bibim.Core
             ServiceContainer.Reset();
             WindowsNotificationService.Dispose();
             return Result.Succeeded;
+        }
+
+        private void OnRevitDocumentClosed(object sender, Autodesk.Revit.DB.Events.DocumentClosedEventArgs e)
+        {
+            try
+            {
+                // Re-read the (possibly null) active document after a close so the
+                // cache never keeps a closed document's identity.
+                var doc = CurrentUiApp?.ActiveUIDocument?.Document;
+                CurrentActiveDocTitle = doc?.Title;
+                CurrentActiveDocPath = doc?.PathName;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("BibimApp", $"DocumentClosed refresh error (non-fatal): {ex.Message}");
+            }
+        }
+
+        private void OnViewActivated(object sender, Autodesk.Revit.UI.Events.ViewActivatedEventArgs e)
+        {
+            try
+            {
+                var doc = e.Document ?? e.CurrentActiveView?.Document;
+                if (doc != null)
+                {
+                    CurrentActiveDocTitle = doc.Title;
+                    CurrentActiveDocPath = doc.PathName;
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("BibimApp", $"ViewActivated error (non-fatal): {ex.Message}");
+            }
         }
 
         private void OnRevitDocumentChanged(object sender, Autodesk.Revit.DB.Events.DocumentChangedEventArgs e)
@@ -316,11 +382,8 @@ namespace Bibim.Core
 
                 Logger.Log("BibimApp", $"Assembly resolver installed: context={_loadContext.Name ?? "Default"} dir={addinDir}");
 
-                // Revit 2025/2026 add-in host does not always honor plugin deps.json
-                // for transitive package assemblies. Preload the known hot path now.
-                PreloadManagedAssembly("System.Text.Json");
-                PreloadManagedAssembly("System.Text.Encodings.Web");
-                PreloadManagedAssembly("Anthropic");
+                // (v1.2.0) The Anthropic SDK package — the only reason System.Text.Json
+                // shipped beside the add-in — was removed; nothing to preload now.
             }
             catch (Exception ex)
             {

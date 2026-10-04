@@ -46,13 +46,13 @@ namespace Bibim.Core
             _httpClient = httpClient ?? throw new ArgumentNullException(nameof(httpClient));
         }
 
-        public async Task<JObject> SendNonStreamingAsync(
+        public async Task<JObject> CreateMessageAsync(
             JArray messages,
             string systemPrompt,
             JArray tools,
             CancellationToken ct,
             int maxTokens,
-            bool jsonMode = false)
+            LlmRequestOptions options = null)
         {
             // Build OpenAI Responses API input array from Anthropic-shaped messages.
             // OpenAI uses: input = [ { type: "message", role, content: [{type:"input_text", text}] }, ... ]
@@ -71,15 +71,7 @@ namespace Bibim.Core
             if (tools != null && tools.Count > 0)
                 requestBody["tools"] = TranslateToolsToOpenAI(tools);
 
-            // JSON-only output mode for the Task Planner.
-            // Responses API uses `text.format` with `type: "json_object"`.
-            if (jsonMode)
-            {
-                requestBody["text"] = new JObject
-                {
-                    ["format"] = new JObject { ["type"] = "json_object" }
-                };
-            }
+            ApplyRequestOptions(requestBody, options);
 
             using (var request = new HttpRequestMessage(HttpMethod.Post, ResponsesEndpoint))
             {
@@ -106,7 +98,8 @@ namespace Bibim.Core
             string systemPrompt,
             Action<string> onTextDelta,
             CancellationToken ct,
-            int maxTokens)
+            int maxTokens,
+            LlmRequestOptions options = null)
         {
             // For chat-only streaming (no tools), use Chat Completions API — simpler SSE format.
             var chatMessages = new JArray();
@@ -138,6 +131,10 @@ namespace Bibim.Core
                 ["stream"] = true,
                 ["stream_options"] = new JObject { ["include_usage"] = true }
             };
+            // Chat Completions spells the reasoning control as a top-level field.
+            string chatEffort = NormalizeEffort(options?.Effort);
+            if (chatEffort != null)
+                requestBody["reasoning_effort"] = chatEffort;
 
             using (var request = new HttpRequestMessage(HttpMethod.Post, ChatEndpoint))
             {
@@ -208,12 +205,62 @@ namespace Bibim.Core
                     return new StreamResult
                     {
                         FullText = fullText.ToString(),
-                        InputTokens = inputTokens,
+                        // OpenAI's prompt count includes cached tokens — normalize to
+                        // the canonical exclusive semantics (see non-streaming mapper).
+                        InputTokens = Math.Max(0, inputTokens - cachedTokens),
                         OutputTokens = outputTokens,
                         CachedInputTokens = cachedTokens
                     };
                 }
             }
+        }
+
+
+        // ───────────────────────────── options ─────────────────────────────
+
+        /// <summary>
+        /// Map provider-neutral options onto a Responses API request:
+        /// effort → reasoning.effort; schema → strict json_schema text format;
+        /// JsonMode (no schema) → json_object.
+        /// </summary>
+        internal static void ApplyRequestOptions(JObject requestBody, LlmRequestOptions options)
+        {
+            if (options == null) return;
+
+            string effort = NormalizeEffort(options.Effort);
+            if (effort != null)
+                requestBody["reasoning"] = new JObject { ["effort"] = effort };
+
+            if (options.ResponseSchema != null)
+            {
+                requestBody["text"] = new JObject
+                {
+                    ["format"] = new JObject
+                    {
+                        ["type"] = "json_schema",
+                        ["name"] = string.IsNullOrWhiteSpace(options.ResponseSchemaName) ? "response" : options.ResponseSchemaName,
+                        ["schema"] = options.ResponseSchema,
+                        ["strict"] = true
+                    }
+                };
+            }
+            else if (options.JsonMode)
+            {
+                // The Responses API rejects json_object unless an input message contains
+                // the word "json" — BuildPlannerInput ends with an explicit JSON trailer.
+                requestBody["text"] = new JObject
+                {
+                    ["format"] = new JObject { ["type"] = "json_object" }
+                };
+            }
+        }
+
+        /// <summary>low / medium / high pass through; anything else is dropped.</summary>
+        private static string NormalizeEffort(string effort)
+        {
+            if (string.IsNullOrWhiteSpace(effort)) return null;
+            string e = effort.Trim().ToLowerInvariant();
+            return e == "low" || e == "medium" || e == "high" ? e : null;
         }
 
         // ───────────────────────────── translators ─────────────────────────────
@@ -333,6 +380,7 @@ namespace Bibim.Core
         {
             var content = new JArray();
             string stopReason = "end_turn";
+            bool refused = false;
 
             // OpenAI response.output is an array of items: messages, function_calls, reasoning
             var output = openAiResponse["output"] as JArray ?? new JArray();
@@ -356,6 +404,16 @@ namespace Bibim.Core
                                     ["type"] = "text",
                                     ["text"] = part["text"]?.ToString() ?? ""
                                 });
+                            }
+                            else if (partType == "refusal")
+                            {
+                                // Structured-output refusals arrive as a separate part.
+                                content.Add(new JObject
+                                {
+                                    ["type"] = "text",
+                                    ["text"] = part["refusal"]?.ToString() ?? ""
+                                });
+                                refused = true;
                             }
                         }
                     }
@@ -386,20 +444,25 @@ namespace Bibim.Core
                 // reasoning items: ignored for now (could surface as status updates later)
             }
 
-            // Map OpenAI usage to Anthropic shape
+            // Map OpenAI usage to Anthropic shape.
+            // Canonical (Anthropic-shaped) semantics: input_tokens EXCLUDES cache
+            // reads. OpenAI reports an INCLUSIVE prompt count, so subtract the cached
+            // share — otherwise ProcessedInputTokens (fresh+cached) double-counts it.
             var openAiUsage = openAiResponse["usage"] ?? new JObject();
+            int oaiInput = openAiUsage["input_tokens"]?.Value<int>() ?? openAiUsage["prompt_tokens"]?.Value<int>() ?? 0;
+            int oaiCached = openAiUsage["input_tokens_details"]?["cached_tokens"]?.Value<int>()
+                         ?? openAiUsage["prompt_tokens_details"]?["cached_tokens"]?.Value<int>() ?? 0;
             var usage = new JObject
             {
-                ["input_tokens"] = openAiUsage["input_tokens"] ?? openAiUsage["prompt_tokens"] ?? 0,
+                ["input_tokens"] = Math.Max(0, oaiInput - oaiCached),
                 ["output_tokens"] = openAiUsage["output_tokens"] ?? openAiUsage["completion_tokens"] ?? 0,
-                ["cache_read_input_tokens"] =
-                    openAiUsage["input_tokens_details"]?["cached_tokens"] ??
-                    openAiUsage["prompt_tokens_details"]?["cached_tokens"] ?? 0
+                ["cache_read_input_tokens"] = oaiCached
             };
 
             // Honour explicit finish/stop hints if present
             string finishReason = openAiResponse["status"]?.ToString();
             if (finishReason == "incomplete") stopReason = "max_tokens";
+            if (refused && stopReason != "tool_use") stopReason = "refusal";
 
             return new JObject
             {

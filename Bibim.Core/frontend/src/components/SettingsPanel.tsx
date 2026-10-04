@@ -1,47 +1,65 @@
 import { useState, useEffect, useRef } from 'react';
+import { isImeComposing } from '../utils/ime';
 import { t } from '../i18n';
 
 const FEEDBACK_URL_BUG = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
 const FEEDBACK_URL_FEATURE = 'https://github.com/SquareZero-Inc/bibim-revit/issues/new/choose';
 
-type Provider = 'anthropic' | 'openai' | 'gemini' | 'local';
+type Provider = 'anthropic' | 'openai' | 'local';
 type SaveResult = 'idle' | 'saved' | 'error';
 
-// Model catalogue exposed in v1.1.x. Order = display order.
-// Labels/notes localised via t() at render time.
-// `speed` is observed responsiveness on typical Revit codegen tasks (Apr 2026):
+// Model catalogue (v1.2.0). Order = display order. Keep in sync with
+// Bibim.Core/Services/Providers/ModelCatalog.cs (ids, providers) — this list only
+// adds the UI fields. Labels/notes localised via t() at render time.
+// `cost` is a rough per-query estimate scaled from list prices (Sep 2026).
+// `speed` is observed responsiveness on typical Revit codegen tasks:
 //   '⚡⚡⚡' fast | '⚡⚡' medium | '⚡' slow
 type SpeedRating = '⚡⚡⚡' | '⚡⚡' | '⚡';
 
 type ModelNoteKey =
+  | 'modelNoteSonnet5'
+  | 'modelNoteOpus55'
+  | 'modelNoteOpus5'
+  | 'modelNoteFable51'
   | 'modelNoteSonnet'
   | 'modelNoteOpus47'
+  | 'modelNoteGpt6Sol'
+  | 'modelNoteGpt6Luna'
+  | 'modelNoteGpt56Sol'
+  | 'modelNoteGpt56Terra'
   | 'modelNoteGpt55'
-  | 'modelNoteGemini31Pro'
   | 'modelNoteLocalIdle';
 
 const MODELS: ReadonlyArray<{
   id: string;
   label: string;
   cost: string;
-  /** Cloud entries declare an observed speed glyph (Apr 2026 measurements).
-   *  Local is undefined — speed is hardware-dependent and can't be characterised
-   *  generically. The renderer suppresses the ⚡ chip when speed is absent. */
+  /** Cloud entries declare an observed speed glyph. Local is undefined — speed is
+   *  hardware-dependent. The renderer suppresses the ⚡ chip when speed is absent. */
   speed?: SpeedRating;
   speedKey?: 'modelSpeedFast' | 'modelSpeedMedium' | 'modelSpeedSlow';
   noteKey: ModelNoteKey;
   provider: Provider;
   recommended?: boolean;
 }> = [
-  { id: 'claude-sonnet-4-6',     label: 'Claude Sonnet 4.6', cost: '~$0.04', speed: '⚡⚡⚡', speedKey: 'modelSpeedFast',   noteKey: 'modelNoteSonnet',       provider: 'anthropic', recommended: true },
-  { id: 'claude-opus-4-7',       label: 'Claude Opus 4.7',   cost: '~$0.20', speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteOpus47',       provider: 'anthropic' },
-  { id: 'gpt-5.5',                label: 'GPT-5.5',           cost: '~$0.08', speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteGpt55',        provider: 'openai' },
-  { id: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro',    cost: '~$0.03', speed: '⚡',    speedKey: 'modelSpeedSlow',   noteKey: 'modelNoteGemini31Pro',  provider: 'gemini' },
+  // ── Anthropic ──
+  { id: 'claude-sonnet-5',   label: 'Claude Sonnet 5',   cost: '~$0.03',  speed: '⚡⚡⚡', speedKey: 'modelSpeedFast',   noteKey: 'modelNoteSonnet5',   provider: 'anthropic', recommended: true },
+  { id: 'claude-opus-5-5',   label: 'Claude Opus 5.5',   cost: '~$0.16',  speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteOpus55',    provider: 'anthropic' },
+  { id: 'claude-opus-5',     label: 'Claude Opus 5',     cost: '~$0.20',  speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteOpus5',     provider: 'anthropic' },
+  { id: 'claude-fable-5-1',  label: 'Claude Fable 5.1',  cost: '~$0.40',  speed: '⚡',    speedKey: 'modelSpeedSlow',   noteKey: 'modelNoteFable51',   provider: 'anthropic' },
+  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', cost: '~$0.04',  speed: '⚡⚡⚡', speedKey: 'modelSpeedFast',   noteKey: 'modelNoteSonnet',    provider: 'anthropic' },
+  { id: 'claude-opus-4-7',   label: 'Claude Opus 4.7',   cost: '~$0.20',  speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteOpus47',    provider: 'anthropic' },
+  // ── OpenAI ──
+  { id: 'gpt-6-sol',         label: 'GPT-6 Sol',         cost: '~$0.03',  speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteGpt6Sol',   provider: 'openai' },
+  { id: 'gpt-6-luna',        label: 'GPT-6 Luna',        cost: '~$0.002', speed: '⚡⚡⚡', speedKey: 'modelSpeedFast',   noteKey: 'modelNoteGpt6Luna',  provider: 'openai' },
+  { id: 'gpt-5.6-sol',       label: 'GPT-5.6 Sol',       cost: '~$0.08',  speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteGpt56Sol',  provider: 'openai' },
+  { id: 'gpt-5.6-terra',     label: 'GPT-5.6 Terra',     cost: '~$0.03',  speed: '⚡⚡⚡', speedKey: 'modelSpeedFast',   noteKey: 'modelNoteGpt56Terra', provider: 'openai' },
+  { id: 'gpt-5.5',           label: 'GPT-5.5',           cost: '~$0.08',  speed: '⚡⚡',  speedKey: 'modelSpeedMedium', noteKey: 'modelNoteGpt55',     provider: 'openai' },
   // Self-hosted local LLM — single entry. The active server-side model name is
   // resolved at runtime (config override OR /v1/models auto-discovery) and
   // surfaced as a dynamic note via the renderer, not via noteKey i18n.
   // No per-call cost (BYO hardware), no speed glyph (hardware-dependent).
-  { id: 'local',                 label: 'Local LLM (Self-hosted)', cost: 'Self-hosted', noteKey: 'modelNoteLocalIdle', provider: 'local' },
+  { id: 'local',             label: 'Local LLM (Self-hosted)', cost: 'Self-hosted', noteKey: 'modelNoteLocalIdle', provider: 'local' },
 ];
 
 type LocalConnectionStatus = {
@@ -66,11 +84,6 @@ interface Props {
   openaiMasked: string;
   onSaveOpenAiKey: (key: string) => void;
   openaiSaveResult: SaveResult;
-  // Gemini
-  geminiConfigured: boolean;
-  geminiMasked: string;
-  onSaveGeminiKey: (key: string) => void;
-  geminiSaveResult: SaveResult;
   // Local self-hosted LLM (v1.1.x+)
   localConfigured: boolean;
   localServerUrl: string;
@@ -91,7 +104,6 @@ export default function SettingsPanel(props: Props) {
   const {
     anthropicConfigured, anthropicMasked, onSaveAnthropicKey, anthropicSaveResult,
     openaiConfigured, openaiMasked, onSaveOpenAiKey, openaiSaveResult,
-    geminiConfigured, geminiMasked, onSaveGeminiKey, geminiSaveResult,
     localConfigured, localServerUrl, localModelName, localMasked, localSaveResult,
     localConnectionStatus, onSaveLocalLlmConfig, onTestLocalConnection,
     activeModel, onSaveModel, onOpenUrl,
@@ -113,7 +125,7 @@ export default function SettingsPanel(props: Props) {
   // The header gear icon turns green only if the *active* model has its key configured.
   const activeProvider = MODELS.find(m => m.id === activeModel)?.provider ?? 'anthropic';
   const activeReady = isProviderReady(
-    activeProvider, anthropicConfigured, openaiConfigured, geminiConfigured, localConfigured,
+    activeProvider, anthropicConfigured, openaiConfigured, localConfigured,
   );
 
   return (
@@ -155,7 +167,8 @@ export default function SettingsPanel(props: Props) {
           borderRadius: 'var(--radius-lg)',
           padding: 'var(--space-md)',
           boxShadow: '0 12px 32px rgba(0,0,0,0.24)',
-          zIndex: 20,
+          // Above the narrow-mode drawer backdrop (z25) and drawers (z30).
+          zIndex: 40,
           display: 'flex',
           flexDirection: 'column',
           gap: 'var(--space-md)',
@@ -176,7 +189,6 @@ export default function SettingsPanel(props: Props) {
             activeReady={activeReady}
             anthropicMasked={anthropicMasked}
             openaiMasked={openaiMasked}
-            geminiMasked={geminiMasked}
             localServerUrl={localServerUrl}
             localModelName={localModelName}
             localConnectionStatus={localConnectionStatus}
@@ -210,19 +222,6 @@ export default function SettingsPanel(props: Props) {
 
           <Divider />
 
-          {/* Section: Gemini Key */}
-          <ProviderKeySection
-            title={t('geminiSection')}
-            placeholder={t('geminiKeyPlaceholder')}
-            configured={geminiConfigured}
-            masked={geminiMasked}
-            saveResult={geminiSaveResult}
-            onSave={onSaveGeminiKey}
-            help={t('geminiKeyHelp')}
-          />
-
-          <Divider />
-
           {/* Section: Local Self-hosted LLM (v1.1.x+) */}
           <LocalLlmSection
             configured={localConfigured}
@@ -243,7 +242,7 @@ export default function SettingsPanel(props: Props) {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, marginTop: 4 }}>
               {MODELS.map(m => {
                 const enabled = isProviderReady(
-                  m.provider, anthropicConfigured, openaiConfigured, geminiConfigured, localConfigured,
+                  m.provider, anthropicConfigured, openaiConfigured, localConfigured,
                 );
                 // Local-provider models don't have a per-call dollar cost — suppress unit.
                 const costLabel = m.provider === 'local' ? m.cost : `${m.cost} ${t('modelCostUnit')}`;
@@ -282,7 +281,6 @@ export default function SettingsPanel(props: Props) {
                     lockTooltip={
                       m.provider === 'anthropic' ? t('modelLockedTooltipAnthropic') :
                       m.provider === 'openai'    ? t('modelLockedTooltipOpenAI') :
-                      m.provider === 'gemini'    ? t('modelLockedTooltipGemini') :
                                                    t('modelLockedTooltipLocal')
                     }
                     lockBadge={t('modelLocked')}
@@ -317,13 +315,11 @@ function isProviderReady(
   p: Provider,
   anth: boolean,
   oai: boolean,
-  gem: boolean,
   local: boolean,
 ): boolean {
   switch (p) {
     case 'anthropic': return anth;
     case 'openai':    return oai;
-    case 'gemini':    return gem;
     case 'local':     return local;
   }
 }
@@ -378,7 +374,7 @@ function ProviderKeySection({
             placeholder={placeholder}
             onChange={setInput}
             onToggleShow={() => setShow(p => !p)}
-            onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !isImeComposing(e)) handleSave(); }}
             showLabel={show ? t('apiKeyHideKey') : t('apiKeyShowKey')}
           />
           <SaveRow
@@ -398,12 +394,12 @@ function ProviderKeySection({
 
 /**
  * Compact one-line summary at the top of Settings showing what's currently
- * powering BIBIM. Helps returning users see "I'm on Sonnet 4.6 via Anthropic"
+ * powering BIBIM. Helps returning users see "I'm on Sonnet 5 via Anthropic"
  * at a glance without scrolling through every key section.
  */
 function CurrentSetupChip({
   activeModel, activeProvider, activeReady,
-  anthropicMasked, openaiMasked, geminiMasked,
+  anthropicMasked, openaiMasked,
   localServerUrl, localModelName, localConnectionStatus,
 }: {
   activeModel: string;
@@ -411,7 +407,6 @@ function CurrentSetupChip({
   activeReady: boolean;
   anthropicMasked: string;
   openaiMasked: string;
-  geminiMasked: string;
   localServerUrl: string;
   localModelName: string;
   localConnectionStatus: LocalConnectionStatus;
@@ -439,7 +434,6 @@ function CurrentSetupChip({
   let providerHint = '';
   if (activeProvider === 'anthropic') providerHint = anthropicMasked || 'anthropic';
   else if (activeProvider === 'openai') providerHint = openaiMasked || 'openai';
-  else if (activeProvider === 'gemini') providerHint = geminiMasked || 'gemini';
   else if (activeProvider === 'local') {
     try {
       const u = new URL(localServerUrl);
@@ -572,7 +566,7 @@ function LocalLlmSection({
           type="text"
           value={serverUrl}
           onChange={(e) => setServerUrl(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') handleTestAndSave(); }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && !isImeComposing(e)) handleTestAndSave(); }}
           placeholder={t('localServerUrlPlaceholder')}
           style={textInputStyle}
         />
@@ -954,6 +948,7 @@ const feedbackButtonStyle: React.CSSProperties = {
   cursor: 'pointer',
   textAlign: 'center' as const,
 };
+
 
 const guideButtonStyle: React.CSSProperties = {
   width: '100%',

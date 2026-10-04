@@ -1,4 +1,5 @@
 /** Shared type definitions for BIBIM v3 frontend */
+import type { MessageAttachment } from './utils/attachment';
 
 export interface ChatMsg {
   id: string;
@@ -19,6 +20,8 @@ export interface ChatMsg {
   // Separate feedback-request bubble state
   feedbackStep?: 'awaiting' | 'up_confirmed' | 'down_detail' | 'regen_offer';
   feedbackDetail?: string;
+  /** Document attached to a user message (chip + in-memory preview; body never stored). */
+  attachment?: MessageAttachment;
 }
 
 export type MsgType =
@@ -99,6 +102,8 @@ export interface TaskItem {
   createdAt: string;
   updatedAt: string;
   review?: TaskReview | null;
+  /** The task's code can be previewed again without regenerating. */
+  canRerun?: boolean;
 }
 
 export interface TaskSummary {

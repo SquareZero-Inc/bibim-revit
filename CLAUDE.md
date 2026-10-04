@@ -1,100 +1,107 @@
 # BIBIM_REVIT — Claude Working Notes
 
 ## Project
-Claude-powered Revit C# add-in (BYOK). Multi-target:
+LLM-powered Revit C# add-in (BYOK: Anthropic / OpenAI / self-hosted). Multi-target:
 - `net48` — Revit 2022–2024
-- `net8.0-windows` — Revit 2025–2026
+- `net8.0-windows` — Revit 2025–2026 (2025.5 / 2026.5+ hosts run it on .NET 10)
 - `net10.0-windows` — Revit 2027+
 
 ## Build
 - Diagnose compile errors: `dotnet build "Bibim.Core\Bibim.Core.csproj" -c R2026 -p:TargetFramework=net8.0-windows`
+- Also check `-c R2024 -p:TargetFramework=net48`, `-c R2027 -p:TargetFramework=net10.0-windows` before committing.
 - `.\build.ps1` auto-elevates admin — errors close window before `pause`; always diagnose via dotnet directly
 - Build configs: `R2022`–`R2027`; full release: `.\build.ps1 -SkipFrontend -SkipTests`
 - R2027 requires .NET 10 SDK — build.ps1 skips gracefully if not installed
+- Tests: `dotnet test Bibim.Core.Tests\Bibim.Core.Tests.csproj` (links Revit-free source files — keep RevitAPI types out of linked files; see the csproj list)
+- Frontend: `cd Bibim.Core\frontend && npm run build` → commits `wwwroot/`
 
 ## C# Gotchas
 - `volatile` not valid on `double`/`long` — use `Volatile.Read(ref field)` / `Volatile.Write(ref field, value)`
-- `BibimDockablePanelProvider.cs` is 4000+ lines — use Grep, don't read whole file
+- `BibimDockablePanelProvider` is a partial class split across `BibimDockablePanelProvider*.cs` — use Grep, don't read whole files
 - `RunRoslynCheck` in `BibimToolService.cs` runs BIBIM001-005 analyzers + `ApplyAutoFixes` — NOT just a compile check. Don't remove/bypass it as "redundant."
 - `HttpClient`: never create per-request with `using` — use shared static field. `_downloadHttpClient` in `BibimDockablePanelProvider`; `_httpClient` (static) in `LlmOrchestrationService`.
 - `RegisterAsyncHandler` lambdas are `Func<JObject, Task>` — removing `async` requires explicit `return Task.CompletedTask;` at every exit point.
+- net48 needs the explicit `System.Net.Http` framework reference (csproj) — it used to arrive via the removed Anthropic SDK.
+- `ElementId` → integer: `IntegerValue` on 2022/2023, `Value` on 2024+ (`#if REVIT_2022 || REVIT_2023`).
+- Python edit scripts on Windows: preserve BOM / line endings of the original file (several files have no BOM; the .iss files must stay BOM-less).
 
 ## Key Files
-- `BibimDockablePanelProvider.cs` — all JS↔C# bridge handlers, LLM dispatch
-- `Common/ConfigService.cs` — rag_config.json loader, per-provider key save, migration, `GetActiveCredentials()`, `AvailableModels`
-- `Services/LlmOrchestrationService.cs` — provider-agnostic tool loop + Roslyn retry; delegates HTTP to `ILlmProvider`
-- `Services/Providers/` — `ILlmProvider` + `AnthropicProvider` / `OpenAIProvider` / `GeminiProvider` + `LlmProviderFactory`
-- `Services/BibimToolService.cs` — LLM tool definitions + Revit code execution
-- `Services/TokenTracker.cs` — local session token accumulators (input/output/cache_read/cache_create + `SessionCacheHitRatio`)
-- `Services/LocalRevitRagService.cs` — local BM25 RAG over RevitAPI.xml
-- `Services/BM25Engine.cs` — pure C# BM25, no NuGet deps
-- `Services/HistorySummariser.cs` — collapses dropped sliding-window turns into a synthetic "[Earlier session context]" message
-- `Services/Prompts/CodeGenSystemPrompt.cs` — code-gen system prompt builder. `Build(rev, isCodeGen, isFileOutput)` — `isFileOutput` gates the ~700t file-safety block. Has `LooksLikeFileOutputTask(text)` heuristic helper.
-- `Services/Prompts/CategoryQuestionTemplates.cs` — `BuildPlannerChecklist()` for compact planner question library + `PlannerGate.ShouldSkipPlanner()` heuristic gate
-- `build.ps1` — full build pipeline (frontend → C# → tests → Inno Setup → codesign)
-- `TOKEN_OPT_BACKLOG.md` — verified follow-up tickets (BIBIM-102 / 103 / 105 / 203 / 205 / 206 / etc.)
+- `BibimDockablePanelProvider*.cs` — JS↔C# bridge handlers, planner, task flow, codegen dispatch, commit verification
+- `Services/Providers/ModelCatalog.cs` — **single source of truth** for selectable models + per-model request capabilities (thinking default, append-only history, server fallbacks, effort, structured output, max output)
+- `Common/ConfigService.cs` — rag_config.json loader, migrations (gemini→default, plaintext keys→DPAPI), per-provider key save, `GetActiveCredentials()`, `llm` tuning block, `GetAnthropicEndpoint()` (optional gateway override, null by default)
+- `Common/SecretProtector.cs` — DPAPI (CurrentUser) encryption of stored keys (`dpapi:<base64>`)
+- `Services/LlmOrchestrationService.cs` — provider-agnostic tool loop, Roslyn retry, runtime self-correction, live progress, refusal handling
+- `Services/Providers/` — `ILlmProvider` (+ `LlmRequestOptions`) + `AnthropicProvider` / `OpenAIProvider` / `LocalProvider` + `LlmProviderFactory`
+- `Services/BibimToolService.cs` — LLM tool definitions + execution (RAG, Roslyn check, 5 context tools, read tools `count_elements` / `list_elements`, `search_code_library` when the library has snippets)
+- `Services/CodeLibrarySearch.cs` — keyword search over saved snippets (Korean spacing-insensitive) behind `search_code_library`
+- `Services/RevitContextProvider.Query.cs` — typed read queries behind the read tools (main thread only)
+- `Services/CommitVerifier.cs` — post-commit measured verification (delta vs preview, files on disk)
+- `Services/AuditLogService.cs` — `%APPDATA%\BIBIM\audit\audit_YYYYMM.jsonl`, one line per commit/undo
+- `Services/ProgressNarrator.cs` — streamed deltas → one-line progress banner text
+- `Services/HistoryWindowPolicy.cs` — stepped chat-history window (cache-stable prefix)
+- `Services/Prompts/CodeGenSystemPrompt.cs` — code-gen system prompt. `Build(rev, isCodeGen, isFileOutput, allowDirectReadAnswer)`
+- `Services/Prompts/PlannerSchema.cs` — JSON schema for the planner's structured output (incl. `taskCategory`)
+- `Services/Prompts/CapabilityManifest.cs` — in-session-impossible operations, injected into planner + codegen prompts
+- `Services/Prompts/CategoryQuestionTemplates.cs` — planner question checklist + `PlannerGate` (exact greeting/ack match only; `ContainsWriteIntent` for the planner-failure halt)
+- `Models/TaskFlowModels.cs` — `TaskState` (incl. `Category`), `TaskCategories`, `TaskPlanResponse`
+- `build.ps1` — full build pipeline (frontend → C# → tests → Inno Setup → codesign incl. 2027)
 
-## Multi-Provider Architecture (v1.1+)
-- Canonical message format inside the orchestrator is **Anthropic-shaped JArray** (`{role, content[]}` with `tool_use` / `tool_result` blocks).
-- Each provider adapter converts to/from native shape:
-  - OpenAI: Responses API; tool_use → function_call; arguments come back as stringified JSON, parse via JObject.
-  - Gemini: `generateContent`; tool_use → functionCall; synthetic call_id (Gemini lacks one).
-- Provider routing is by model-id prefix (`claude-*` / `gpt-*` / `gemini-*`) — no separate `selected_provider` field.
-- Add a new model: extend `LlmProviderFactory.ResolveProviderForModel`, `ConfigService.AvailableModels`, and the `MODELS` array in `frontend/src/components/SettingsPanel.tsx`.
+## Models & Providers (v1.2.0)
+- Anthropic: `claude-sonnet-5` (default), `claude-opus-5-5`, `claude-opus-5`, `claude-fable-5-1`, legacy `claude-sonnet-4-6`, `claude-opus-4-7`.
+- OpenAI (Responses API): `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, legacy `gpt-5.5`.
+- Local: `local` (OpenAI-compatible Chat Completions server; model name resolved at runtime).
+- **Gemini removed in v1.2.0** — `ModelCatalog.MigrateModelId` rewrites stored `gemini-*` to the default.
+- Add a model: one row in `ModelCatalog.Models` + the `MODELS` array in `frontend/src/components/SettingsPanel.tsx` (+ i18n note keys). Routing is by id prefix (`ModelCatalog.ResolveProvider`).
+- Canonical message format inside the orchestrator is **Anthropic-shaped JArray**; OpenAI/Local adapters translate.
+
+## Anthropic request rules (live-verified 2026-09-28 on all six Claude models)
+- Caching: tools + system markers `ttl: "1h"`, tail marker 5-minute (longer TTLs must come first). No beta header needed. `ApplyIncrementalMessageCaching` strips stale markers and walks past thinking blocks — do not remove it.
+- `output_config.effort` per route (config `llm.effort_planner|chat|codegen`, defaults low/medium/high). `output_config.format` json_schema for the planner (works on 4.6/4.7 too).
+- Thinking: omitted → model default. When the tool loop wants progress (`LlmRequestOptions.OnProgress`) on thinking-by-default models, send `thinking: {type:"adaptive", display:"summarized"}`. Never send `thinking: disabled` to Opus 5.5 / Fable 5.1 (400).
+- Tool-loop turns stream (SSE assembled back into one message by `SseMessageAssembler`); 180 s idle timeout. max_tokens 32000 (clamped by `ModelInfo.MaxOutputTokens`).
+- `fallbacks: "default"` + beta `server-side-fallback-2026-07-01` on classifier models (Opus 5 / 5.5, Fable 5.1). `SanitizeFallbackBoundary` drops pre-boundary thinking/tool_use.
+- `stop_reason: "refusal"` → `LlmErrorPresenter.RefusalMessage()`, never treated as code/clarification.
+- **Append-only models** (Opus 5.5, Fable 5.1 — preserved thinking): the tool loop must not prune earlier turns (`ModelInfo.AppendOnlyHistory` gates `PrunePriorCompileAttempts`). Echo assistant `content` back unchanged.
+- No sampling params (temperature/top_p) and no assistant prefill anywhere — both 400 on current models.
+
+## OpenAI request rules
+- Responses API for tool turns and the planner: `reasoning.effort` (low/medium/high), planner `text.format` strict `json_schema` (fallback `json_object` needs the word "json" in the input — `BuildPlannerInput` ends with a JSON trailer).
+- Streaming chat uses Chat Completions with `reasoning_effort`.
+- Not live-verified for GPT-6 (no key available when v1.2.0 was built) — smoke-test before recommending.
 
 ## BYOK / API Keys
-- Per-provider keys in `Config/rag_config.json` under `api_keys.{anthropic|openai|gemini}_api_key`. Legacy `claude_api_key` is read as a fallback for Anthropic and mirrored on save (auto-migration with `.bak` backup).
-- Env var overrides: `ANTHROPIC_API_KEY` (or legacy `CLAUDE_API_KEY`), `OPENAI_API_KEY`, `GEMINI_API_KEY`.
-- UI: Settings panel (⚙) — three provider sections + a gated model selector. Bridge handlers `save_api_key` (anthropic), `save_openai_api_key`, `save_gemini_api_key` all call `ConfigService.SaveApiKeyForProvider`.
-- `BibimDockablePanelProvider.EnsureLlmService()` resolves the active provider via `ConfigService.GetActiveCredentials()` and constructs through `LlmProviderFactory.Create()`. **Reset `_llmService` and `_plannerLlmService` to null on any key/model save** so the next call picks up the new credentials.
-- No key for the active model → bridge sends a friendly guidance message before calling the LLM.
+- Per-provider keys in `%APPDATA%\BIBIM\rag_config.json` under `api_keys.{anthropic|openai|local}_api_key`, **DPAPI-encrypted** (`dpapi:` prefix). Plaintext values are encrypted on the next load (`.bak` kept). Placeholders (`YOUR_...`, `..._HERE`) are left alone. A config copied from another user/PC decrypts to null → "not configured".
+- Legacy `claude_api_key` is read as a fallback and mirrored on save.
+- Env var overrides (never written to disk): `ANTHROPIC_API_KEY` (or `CLAUDE_API_KEY`), `OPENAI_API_KEY`, `BIBIM_LOCAL_LLM_*`.
+- Bridge handlers `save_api_key` (anthropic), `save_openai_api_key`, `save_local_llm_config` call `ConfigService`. **Reset `_llmService` and `_plannerLlmService` to null on any key/model save.** (`_codeGenByTask` is deliberately NOT cleared — session-scoped.)
+- `EnsurePlannerService()` applies the optional `planner_model` override (known models only; cross-provider needs its own key). Note: Haiku-class models have a 4096-token cache minimum — the ~2.5k planner prompt would not cache there.
+
+## Harness (v1.2.0)
+- Planner returns structured JSON (schema) incl. `taskCategory` (query/export/model_edit/create/delete/view_selection/annotation/other). `IsZeroDeltaByDesign` and file-output rules use the category first; keyword heuristics are only the fallback for category-less tasks. Do not grow keyword lists — extend the schema.
+- READ tasks get the read tools and may answer in plain text (non-code response → task Completed).
+- Post-commit: `CommitVerifier` block appended to the result; `AuditLogService` line per commit/undo.
+- Stepped history window (`ChatHistoryMaxTurns` 10, `ChatHistoryWindowStep` 6) + summary cached per (session, start).
+- Self-correction: dry-run judge (`JudgeRuntimeResult`) regenerates once on runtime exception / unexpected 0-delta; scale guard 500.
 
 ## RAG (local, on by default)
-- `LocalRevitRagService.FetchAsync()` indexes `RevitAPI.xml` (+ `RevitAPIUI.xml`, `RevitAPIIFC.xml`) on first call (~0.5 s), caches for the process lifetime.
-- Available to all 4 models via the `search_revit_api` tool (definition in `BibimToolService.GetToolDefinitions`).
-- Diet (v1.0.2): `TopK=3`, `MaxChunkDisplayChars=1200`, `MaxMembersPerChunk=30`. ClassRemarks / member Remarks / ParamDescriptions dropped — signature + summary only.
-- Debug logs: `[INDEX_BUILD_DONE]`, `[HIT]`, `[MISS]` in `%APPDATA%\BIBIM\logs\bibim_debug.txt` (was `%USERPROFILE%\bibim_v3_debug.txt` pre-v1.1).
-
-## Token Optimization (v1.0.2)
-- **Anthropic prompt caching**: `cache_control: ephemeral` on system prompt + last tool definition (via `MarkLastToolForCaching` in `AnthropicProvider`). 5-min TTL.
-- **Cache telemetry**: `cache_read_input_tokens` / `cache_creation_input_tokens` parsed from all 3 providers' usage objects. `LlmResponse` / `CodeGenerationResult` / `TokenUsageInfo` carry both fields. `TokenTracker.Track()` accepts them and emits `hit_ratio` in log lines.
-- **Roslyn retry prune**: `LlmOrchestrationService.PrunePriorCompileAttempts()` removes prior failed attempts from `messages` before each retry — avoids re-sending ~700t per round. `BuildCompileErrorFeedback(includeRules)` only emits the 5-line Rules block on the first failure.
-- **Planner gate**: `PlannerGate.ShouldSkipPlanner(userText, hasActiveTask)` skips the ~2,500t planner LLM call for greetings/short non-actionable messages. Gate is conservative — misses default to running the planner.
-- **History summariser**: `HistorySummariser.Summarise(dropped, sessionContext)` compacts aged-out sliding-window turns into ~150t synthetic message. No LLM call — pure C# from task titles + clipped first/last user message.
-- **Conditional FileOutputRules**: `CodeGenSystemPrompt.Build(rev, isCodeGen, isFileOutput)` — only emit the ~700t file-safety block when `LooksLikeFileOutputTask(text)` matches. Caller passes a hint built from task title + summary + source message.
-- **Conditional context tools**: `BibimToolService.GetToolDefinitions(contextHint)` — `search_revit_api` + `run_roslyn_check` always; the 5 Revit-context tools (view/selection/parameters/family/levels) only when hint keywords match.
-- **Tool loop max_tokens 4096** (was 8192) — sufficient for any single C# block. Continuation handler covers rare truncation.
-- **Sliding window 10 turns** (was 20). Anything older → `HistorySummariser`.
-
-## LLM Reliability (v1.0.2)
-- **Gemini JSON mode for planner**: `GeminiProvider` accepts `bool jsonMode` and emits `responseMimeType: "application/json"` when true. Used by `PlanUserIntentAsync` to prevent malformed/truncated JSON.
-- **Planner parse-failure retry**: `PlanUserIntentAsync` retries once with explicit "your previous response was not valid JSON" instruction if `TryParsePlan` returns null. Both must fail before fallback to direct chat.
-- **OpenAI JSON mode**: same `bool jsonMode` plumbing; sets `text.format.type = "json_object"` on Responses API requests.
-- **Anthropic**: `jsonMode` accepted but unused — Claude follows JSON-only prompt instructions reliably.
-- **GPT selection-priority rule**: `CodeGenSystemPrompt.BuildBasePrompt` has an explicit SELECTION-PRIORITY block instructing the model to use `uidoc.Selection.GetElementIds()` on EN/KR pointing language ("these doors", "이 도어들"), never falling back to model-wide `FilteredElementCollector`. Claude already followed this; GPT needed it explicit.
-
-## Sprint 0 Hotfixes (v1.0.2 c-patch — caught in real-user testing)
-Three latent multi-provider bugs that broke the task → question → codegen flow on **all three providers**. All fixed.
-- **BIBIM-001 — Anthropic 400 on tool loop**: `LlmOrchestrationService.GenerateWithToolsAsync` adds `"name"` to every tool_result block (kept for the Gemini adapter's `functionResponse` mapping). Anthropic's strict schema validator rejects unknown fields → `messages.N.content.0.tool_result.name: Extra inputs are not permitted`. **Fix**: `AnthropicProvider.SendNonStreamingAsync` strips `tool_result.name` from each message before sending. Provider-specific defence — Gemini adapter still gets to use the field.
-- **BIBIM-002 — OpenAI 400 on planner**: OpenAI Responses API rejects `text.format=json_object` mode unless an input message contains the literal word "json" (instructions-only doesn't count). **Fix**: `BuildPlannerInput` ends with `[Output format: respond with JSON only — no markdown, no commentary.]` — also reinforces JSON behaviour for Gemini.
-- **BIBIM-003 — Gemini planner non-JSON output**: the `-customtools` model variant is specialised for agentic workflows with registered tools and silently ignores `responseMimeType: application/json` when no tools are sent. **Fix**: model id swapped to vanilla `gemini-3.1-pro-preview` (Google's own guidance: use vanilla when <50% of requests involve tool calling). Auto-migration in `ConfigService.LoadRagConfig` rewrites stored configs on next launch with a `.bak`. `ExtractJsonObject` also strips ```json fences as a defensive secondary.
-
-## Model Selector UX (v1.0.2)
-- Each model in the Settings selector shows a response-speed indicator (⚡⚡⚡ fast / ⚡⚡ medium / ⚡ slow) with a localised tooltip. Sonnet 4.6 = ⚡⚡⚡, Opus/GPT-5.5 = ⚡⚡, Gemini 3.1 Pro = ⚡. Source of truth: `MODELS` array in `frontend/src/components/SettingsPanel.tsx`. Dynamo mirror lives in `Views/ApiKeySetupView.xaml`.
+- `LocalRevitRagService.FetchAsync()` indexes `RevitAPI.xml` (+ `RevitAPIUI.xml`, `RevitAPIIFC.xml`) next to the loaded RevitAPI.dll on first call (~0.5 s), cached for the process lifetime.
+- Exposed via the `search_revit_api` tool. `TopK=3`, `MaxChunkDisplayChars=1200`, `MaxMembersPerChunk=30`. English queries only (tokenizer splits on non-ASCII).
+- Debug logs: `[INDEX_BUILD_DONE]`, `[HIT]`, `[MISS]` in `%APPDATA%\BIBIM\logs\bibim_debug.txt`.
 
 ## Loading-State Safety
-- `LlmOrchestrationService.SendMessageAsync` and `GenerateWithToolsAsync` both wrap the body in try/catch with `finally { OnStatusUpdate?.Invoke(null); }`. **Do not remove the finally block** — without it, an LLM error (429, network, etc.) leaves the chat panel stuck on "Generating response...".
+- `LlmOrchestrationService.SendMessageAsync` and `GenerateWithToolsAsync` both wrap the body in try/catch with `finally { OnStatusUpdate?.Invoke(null); }`. **Do not remove the finally block** — without it an LLM error leaves the panel stuck.
+- Frontend self-heals on `streaming_end`/Stop; the banner label ellipsizes, so long live-progress text is safe. `LoadingModal.REVIT_EXECUTING_LABELS` must match the C# execution labels (substring match).
 
 ## Commit Workflow
 1. Scan changes: `git status --porcelain`
 2. Stage files explicitly — never `git add -A` or `git add .`
-4. Commit message format:
+3. Commit message format:
    ```
    <type>: <subject>
 
    <body>
 
-   Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+   Co-Authored-By: <the Claude model that made the change> <noreply@anthropic.com>
    ```
    Types: `feat / fix / refactor / docs / chore / test`
-5. No `--no-verify`. No force push to main.
+4. No `--no-verify`. No force push to main.

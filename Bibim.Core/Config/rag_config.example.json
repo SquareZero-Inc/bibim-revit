@@ -1,28 +1,26 @@
 {
-  "detected_revit_version": "2025",
-  "active_store": "",
-  "claude_model": "claude-sonnet-4-6",
-  "gemini_model": "gemini-2.0-flash",
+  "detected_revit_version": "2026",
+  "claude_model": "claude-sonnet-5",
   "api_keys": {
-    "claude_api_key": "YOUR_CLAUDE_API_KEY",
-    "gemini_api_key": ""
+    "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY_HERE",
+    "openai_api_key": ""
   },
-  "stores": {
-    "2022": "",
-    "2023": "",
-    "2024": "",
-    "2025": "",
-    "2026": ""
+  "llm": {
+    "effort_planner": "low",
+    "effort_chat": "medium",
+    "effort_codegen": "high",
+    "prompt_cache_ttl": "1h"
   },
-  "fallback_store": "",
-  "fallback_version": "2025",
   "validation": {
     "gate_enabled": true,
     "auto_fix_enabled": true,
     "auto_fix_max_attempts": 2,
     "verify_stage_enabled": false,
     "enable_api_xml_hints": true,
-    "rollout_phase": "phase3"
+    "rollout_phase": "phase3",
+    "self_correction_enabled": true,
+    "self_correction_max_retries": 1,
+    "self_correction_scale_guard": 500
   },
-  "_comment": "RAG (Gemini fileSearch) is temporarily disabled in this OSS release. Only claude_api_key is required. Copy this file to rag_config.json and fill in your Anthropic API key. Get one at https://console.anthropic.com/"
+  "_comment": "Copy to %APPDATA%\\BIBIM\\rag_config.json, or just use Settings. Keys saved from Settings are encrypted with Windows DPAPI; a plaintext key typed here is encrypted automatically on the next launch. claude_model accepts any id from the Settings list (claude-* / gpt-* / local). The llm block is optional."
 }

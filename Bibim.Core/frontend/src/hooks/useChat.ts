@@ -2,6 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { sendToBackend, onBackendMessage } from '../bridge';
 import { useAppInfo } from './useAppInfo';
 import { useCodeLibrary } from './useCodeLibrary';
+import { toMessageAttachment, type PendingAttachment } from '../utils/attachment';
 import type {
   ChatMsg,
   ProgressStep,
@@ -36,9 +37,6 @@ export function useChat() {
   const [openaiConfigured, setOpenaiConfigured] = useState(false);
   const [openaiMasked, setOpenaiMasked] = useState('');
   const [openaiSaveResult, setOpenaiSaveResult] = useState<'idle' | 'saved' | 'error'>('idle');
-  const [geminiConfigured, setGeminiConfigured] = useState(false);
-  const [geminiMasked, setGeminiMasked] = useState('');
-  const [geminiKeySaveResult, setGeminiKeySaveResult] = useState<'idle' | 'saved' | 'error'>('idle');
   // Local self-hosted LLM (v1.1.x+)
   const [localConfigured, setLocalConfigured] = useState(false);
   const [localServerUrl, setLocalServerUrl] = useState('');
@@ -57,8 +55,8 @@ export function useChat() {
       models?: string[];
     }
   >({ state: 'idle' });
-  // Active model (id includes provider prefix, e.g. claude-*, gpt-*, gemini-*)
-  const [claudeModel, setClaudeModel] = useState('claude-sonnet-4-6');
+  // Active model (id includes provider prefix, e.g. claude-*, gpt-*)
+  const [claudeModel, setClaudeModel] = useState('claude-sonnet-5');
   // Aggregate "any active key configured" — kept under legacy name for back-compat with header chip.
   const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
   const [pendingLoadSessionId, setPendingLoadSessionId] = useState<string | null>(null);
@@ -123,6 +121,11 @@ export function useChat() {
       setIsStreaming(false);
       streamingRef.current = false;
       finishRequest();
+      // Self-heal: a delivered assistant turn always ends the busy banner.
+      // Previously steps were cleared ONLY by a backend progress:[] message —
+      // one dropped bridge message left the input disabled forever. A stage
+      // that continues working immediately re-posts its own progress.
+      setSteps([]);
       streamBuf.current = '';
       setMessages((prev) => {
         const filtered = prev.filter((m) => m.id !== '__streaming__');
@@ -296,18 +299,15 @@ export function useChat() {
         activeModel?: string;
         anthropic?: { configured?: boolean; maskedKey?: string };
         openai?:    { configured?: boolean; maskedKey?: string };
-        gemini?:    { configured?: boolean; maskedKey?: string };
         // v1.1.x+ local self-hosted
         local?:     { configured?: boolean; serverUrl?: string; modelName?: string; maskedKey?: string };
         // Legacy fields kept for backward compat with older backends
         maskedKey?: string;
         claudeModel?: string;
-        geminiConfigured?: boolean;
-        geminiMaskedKey?: string;
       };
 
       // Active model = primary signal for the header chip + selector highlight
-      const activeModel = data?.activeModel ?? data?.claudeModel ?? 'claude-sonnet-4-6';
+      const activeModel = data?.activeModel ?? data?.claudeModel ?? 'claude-sonnet-5';
       setClaudeModel(activeModel);
       setApiKeyConfigured(data?.configured ?? false);
 
@@ -316,8 +316,6 @@ export function useChat() {
       setAnthropicMasked(data?.anthropic?.maskedKey ?? data?.maskedKey ?? '');
       setOpenaiConfigured(data?.openai?.configured ?? false);
       setOpenaiMasked(data?.openai?.maskedKey ?? '');
-      setGeminiConfigured(data?.gemini?.configured ?? data?.geminiConfigured ?? false);
-      setGeminiMasked(data?.gemini?.maskedKey ?? data?.geminiMaskedKey ?? '');
       // Local self-hosted — gated by server URL, not key.
       setLocalConfigured(data?.local?.configured ?? false);
       setLocalServerUrl(data?.local?.serverUrl ?? '');
@@ -332,7 +330,6 @@ export function useChat() {
       switch (data?.provider) {
         case 'anthropic': setAnthropicSaveResult(status); setTimeout(() => setAnthropicSaveResult('idle'), 3000); break;
         case 'openai':    setOpenaiSaveResult(status);    setTimeout(() => setOpenaiSaveResult('idle'), 3000);    break;
-        case 'gemini':    setGeminiKeySaveResult(status); setTimeout(() => setGeminiKeySaveResult('idle'), 3000); break;
         case 'local':     setLocalSaveResult(status);     setTimeout(() => setLocalSaveResult('idle'), 3000);     break;
         default:
           // Legacy backend: assume Anthropic (the only provider before v1.1.0)
@@ -365,13 +362,6 @@ export function useChat() {
       }
     });
 
-    // Legacy event for older backend builds
-    onBackendMessage('gemini_key_save_result', (payload) => {
-      const data = payload as { success?: boolean };
-      setGeminiKeySaveResult(data?.success ? 'saved' : 'error');
-      setTimeout(() => setGeminiKeySaveResult('idle'), 3000);
-    });
-
     // get_app_info → useAppInfo, get_code_library → useCodeLibrary
     sendToBackend('get_sessions', {});
     sendToBackend('get_task_state', {});
@@ -379,8 +369,8 @@ export function useChat() {
     sendToBackend('get_api_key_status', {});
   }, []);
 
-  const sendMessage = useCallback((text: string) => {
-    if (!text.trim() || isStreaming || isPendingRequest) return;
+  const sendMessage = useCallback((text: string, attachment?: PendingAttachment) => {
+    if ((!text.trim() && !attachment) || isStreaming || isPendingRequest) return;
     if (!startRequest()) return;
 
     const userMsg: ChatMsg = {
@@ -389,12 +379,24 @@ export function useChat() {
       isUser: true,
       type: 'normal',
       createdAt: new Date().toISOString(),
+      attachment: attachment ? toMessageAttachment(attachment) : undefined,
     };
     setMessages((prev) => [...prev, userMsg]);
 
     streamBuf.current = '';
 
-    sendToBackend('user_message', { text });
+    // The document body rides this one message to the backend (→ LLM request only).
+    sendToBackend('user_message', attachment
+      ? {
+          text,
+          attachment: {
+            name: attachment.name,
+            content: attachment.content,
+            sizeBytes: attachment.sizeBytes,
+            omittedChars: attachment.omittedChars,
+          },
+        }
+      : { text });
   }, [isStreaming, isPendingRequest, startRequest]);
 
   const confirmTask = useCallback(() => {
@@ -415,9 +417,12 @@ export function useChat() {
     sendToBackend('task_feedback', { actionId, taskId, vote });
   }, []);
 
-  const executeCode = useCallback((mode: 'dryrun' | 'commit') => {
+  // taskId ties Apply to the CARD the user pressed, not to whatever task is
+  // "active" backend-side (the active pointer follows the latest generation,
+  // so without this an interleaved task swapped the assembly under Apply).
+  const executeCode = useCallback((mode: 'dryrun' | 'commit', taskId?: string) => {
     if (isStreaming || isPendingRequest || !startRequest()) return;
-    sendToBackend('execute', { mode });
+    sendToBackend('execute', { mode, taskId });
   }, [isPendingRequest, isStreaming, startRequest]);
 
   const doLoadSession = useCallback((sessionId: string) => {
@@ -471,7 +476,16 @@ export function useChat() {
     setIsStreaming(false);
     streamingRef.current = false;
     finishRequest();
+    // Local self-heal on Stop: clear the banner and drop the partial streaming
+    // bubble instead of waiting for a backend progress:[] that may never come.
+    setSteps([]);
+    streamBuf.current = '';
+    setMessages((prev) => prev.filter((m) => m.id !== '__streaming__'));
   }, [finishRequest]);
+
+  // Watchdog escape hatch — intentionally the SAME sequence as Stop so the
+  // self-heal behavior lives in exactly one place.
+  const forceUnstick = cancelStreaming;
 
   const rerunCode = useCallback((sourceSessionId: string, sourceTitle: string, code: string) => {
     if (!code.trim()) return;
@@ -539,10 +553,6 @@ export function useChat() {
     sendToBackend('save_openai_api_key', { apiKey });
   }, []);
 
-  const saveGeminiApiKey = useCallback((apiKey: string) => {
-    sendToBackend('save_gemini_api_key', { apiKey });
-  }, []);
-
   const saveModel = useCallback((modelId: string) => {
     sendToBackend('save_model', { modelId });
   }, []);
@@ -587,6 +597,7 @@ export function useChat() {
     newSession,
     rerunCode,
     cancelStreaming,
+    forceUnstick,
     editCodeFromLibrary,
     submitQuestionAnswers,
     sendFeedbackDetail,
@@ -605,10 +616,6 @@ export function useChat() {
     openaiMasked,
     openaiSaveResult,
     saveOpenAiApiKey,
-    geminiConfigured,
-    geminiMasked,
-    geminiKeySaveResult,
-    saveGeminiApiKey,
     // Local self-hosted (v1.1.x+)
     localConfigured,
     localServerUrl,

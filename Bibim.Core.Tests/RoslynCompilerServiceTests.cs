@@ -25,6 +25,18 @@ return sb.ToString();";
         }
 
         [Fact]
+        public void PrepareSource_ImportsSystemIoAndText()
+        {
+            // Bodies may not add using directives; Path/File/StringBuilder must resolve.
+            var service = new RoslynCompilerService();
+            object prepared = InvokePrepareSource(service, "var p = Path.Combine(\"a\", \"b\");");
+            string wrapped = GetPreparedSourceProperty(prepared, "WrappedSource");
+
+            Assert.Contains("using System.IO;", wrapped);
+            Assert.Contains("using System.Text;", wrapped);
+        }
+
+        [Fact]
         public void PrepareSource_PreservesStructuredCompilationUnit()
         {
             var service = new RoslynCompilerService();

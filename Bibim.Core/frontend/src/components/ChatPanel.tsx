@@ -1,6 +1,7 @@
-import { useRef, useEffect } from 'react';
+import { useRef, useEffect, useState } from 'react';
 import { t } from '../i18n';
 import type { ChatMsg, ProgressStep, TaskItem, TaskSummary } from '../types';
+import type { PendingAttachment } from '../utils/attachment';
 import ChatMessage from './ChatMessage';
 import ChatInput from './ChatInput';
 import CurrentTaskPanel from './CurrentTaskPanel';
@@ -14,11 +15,13 @@ interface Props {
   currentTask: TaskItem | null;
   taskList: TaskSummary[];
   appVersion: string;
-  onSend: (text: string) => void;
+  onSend: (text: string, attachment?: PendingAttachment) => void;
   onCancel: () => void;
+  onForceUnstick?: () => void;
+  isStreaming?: boolean;
   onTaskConfirm: () => void;
   onTaskCancel: () => void;
-  onApply: (mode: 'dryrun' | 'commit') => void;
+  onApply: (mode: 'dryrun' | 'commit', taskId?: string) => void;
   onUndo: (actionId: string, taskId?: string) => void;
   onFeedback: (actionId: string, vote: 'up' | 'down', taskId?: string) => void;
   onFeedbackDetail?: (actionId: string, taskId: string | undefined, detail: string) => void;
@@ -31,21 +34,38 @@ interface Props {
 
 export default function ChatPanel({
   messages, isBusy, steps, currentTask, taskList, appVersion,
-  onSend, onCancel, onTaskConfirm, onTaskCancel, onApply, onUndo, onFeedback,
+  onSend, onCancel, onForceUnstick, isStreaming, onTaskConfirm, onTaskCancel, onApply, onUndo, onFeedback,
   onFeedbackDetail, onRegenerate, onRerun, onQuestionAnswers, onWarningResponse, isMandatoryUpdate,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Auto-scroll only when the user is already near the bottom — yanking them
+  // down on every streaming delta made reading earlier messages impossible.
+  const nearBottomRef = useRef(true);
   // Show the question card whenever the task needs details and has questions.
   // Empty options array is valid — it means a free-text-only question (U-1 fix).
   const hasQuestions = currentTask?.stage === 'needs_details'
     && currentTask.questions
     && currentTask.questions.length > 0;
+  // The card used to REPLACE the input, leaving no way to just answer in
+  // prose when the planner asked something odd. Now they coexist; dismissing
+  // the card re-arms when a different question set arrives.
+  const [questionsDismissed, setQuestionsDismissed] = useState(false);
+  // Key by question IDs — 'update' re-plans reuse the taskId and can swap in a
+  // DIFFERENT same-length question set, which a length-based key missed.
+  const questionsKey = `${currentTask?.taskId ?? ''}:${(currentTask?.questions ?? []).map(q => (typeof q === 'string' ? q : q.id)).join(',')}`;
+  useEffect(() => { setQuestionsDismissed(false); }, [questionsKey]);
 
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && nearBottomRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages]);
+
+  const handleScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    nearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
 
   return (
     <div style={{
@@ -53,10 +73,11 @@ export default function ChatPanel({
       height: '100%', overflow: 'hidden',
     }}>
       {/* Non-blocking loading banner — sits above the scroll area so chat remains scrollable */}
-      <LoadingModal open={isBusy} steps={steps} onCancel={onCancel} />
+      <LoadingModal open={isBusy} steps={steps} streamingActive={isStreaming} onForceUnstick={onForceUnstick} onCancel={onCancel} />
 
       <div
         ref={scrollRef}
+        onScroll={handleScroll}
         style={{
           flex: 1, overflow: 'auto',
           padding: 'var(--space-md) var(--space-lg)',
@@ -115,21 +136,44 @@ export default function ChatPanel({
           isBusy={isBusy}
           onConfirm={onTaskConfirm}
           onCancel={onTaskCancel}
-          onApply={() => onApply('commit')}
+          onApply={() => onApply('commit', currentTask?.taskId)}
+          onRerun={() => onApply('dryrun', currentTask?.taskId)}
         />
-        {hasQuestions && onQuestionAnswers ? (
+        {hasQuestions && !questionsDismissed && onQuestionAnswers && (
           <QuestionCard
             questions={currentTask!.questions}
             onComplete={onQuestionAnswers}
-          />
-        ) : (
-          <ChatInput
-            onSend={onSend}
-            onCancel={onCancel}
-            disabled={isBusy || !!hasQuestions || !!isMandatoryUpdate}
-            isBusy={isBusy}
+            onDismiss={() => setQuestionsDismissed(true)}
           />
         )}
+        {hasQuestions && questionsDismissed && (
+          <button
+            onClick={() => setQuestionsDismissed(false)}
+            style={{
+              alignSelf: 'flex-start',
+              background: 'none',
+              border: '1px dashed var(--color-border)',
+              borderRadius: 'var(--radius-full)',
+              padding: '2px 10px',
+              cursor: 'pointer',
+              color: 'var(--color-text-muted)',
+              fontSize: 'var(--text-xs)',
+            }}
+          >
+            📋 {t('questionCardReopen')}
+          </button>
+        )}
+        <ChatInput
+          onSend={(text, attachment) => {
+            // The user's own message must always come into view, even if they
+            // were scrolled up reading history when they sent it.
+            nearBottomRef.current = true;
+            onSend(text, attachment);
+          }}
+          onCancel={onCancel}
+          disabled={isBusy || !!isMandatoryUpdate}
+          isBusy={isBusy}
+        />
       </div>
 
     </div>

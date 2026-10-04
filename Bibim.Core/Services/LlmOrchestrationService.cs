@@ -11,10 +11,12 @@ using Newtonsoft.Json.Linq;
 namespace Bibim.Core
 {
     /// <summary>
-    /// LLM Orchestration Service — provider-agnostic in v1.1.0.
+    /// LLM Orchestration Service — provider-agnostic.
     ///
     /// Owns the agent tool-use loop, Roslyn compile/retry logic, and token tracking.
-    /// Delegates HTTP/SSE/format details to an ILlmProvider (Anthropic / OpenAI / Gemini).
+    /// Delegates HTTP/SSE/format details to an ILlmProvider (Anthropic / OpenAI / Local).
+    /// Per-model request rules (thinking, append-only history, fallbacks) come from
+    /// <see cref="ModelCatalog"/>.
     ///
     /// Canonical message format inside the loop is Anthropic-shaped: each provider
     /// adapter converts to/from its native shape transparently.
@@ -52,6 +54,19 @@ namespace Bibim.Core
         public LlmOrchestrationService(string modelId, string apiKey, RoslynCompilerService compiler)
             : this(LlmProviderFactory.Create(modelId, apiKey, _httpClient), compiler)
         {
+        }
+
+        /// <summary>
+        /// Hosted providers (Anthropic / OpenAI) with the shared HttpClient, an optional
+        /// Anthropic endpoint override (self-hosted gateway; null by default) and the prefix cache TTL.
+        /// </summary>
+        public static LlmOrchestrationService CreateRemote(
+            string modelId, string apiKey, RoslynCompilerService compiler,
+            string anthropicEndpoint = null, string prefixCacheTtl = "1h")
+        {
+            return new LlmOrchestrationService(
+                LlmProviderFactory.Create(modelId, apiKey, _httpClient, anthropicEndpoint, null, prefixCacheTtl),
+                compiler);
         }
 
         /// <summary>
@@ -102,7 +117,8 @@ namespace Bibim.Core
             List<ChatMessage> history,
             string systemPrompt,
             CancellationToken ct = default,
-            int maxTokens = 8192)
+            int maxTokens = 16000,
+            LlmRequestOptions options = null)
         {
             var requestId = Guid.NewGuid().ToString("N").Substring(0, 8);
             var sw = Stopwatch.StartNew();
@@ -110,11 +126,12 @@ namespace Bibim.Core
 
             try
             {
-                OnStatusUpdate?.Invoke("Generating response...");
+                OnStatusUpdate?.Invoke(L("Generating response...", "응답 생성 중..."));
 
                 JArray messages = BuildMessagesArray(history);
                 var stream = await _provider.SendStreamingAsync(
-                    messages, systemPrompt, OnStreamingDelta, ct, maxTokens);
+                    messages, systemPrompt, OnStreamingDelta, ct,
+                    ClampMaxTokens(maxTokens), options);
 
                 response.Text = stream.FullText;
                 response.InputTokens = stream.InputTokens;
@@ -122,6 +139,12 @@ namespace Bibim.Core
                 response.CachedInputTokens = stream.CachedInputTokens;
                 response.CacheCreationInputTokens = stream.CacheCreationInputTokens;
                 response.Success = true;
+                if (stream.StopReason == "refusal")
+                {
+                    response.Success = false;
+                    response.IsRefusal = true;
+                    response.ErrorMessage = LlmErrorPresenter.RefusalMessage();
+                }
 
                 OnTokenUsage?.Invoke(new TokenUsageInfo
                 {
@@ -149,8 +172,9 @@ namespace Bibim.Core
             catch (Exception ex)
             {
                 response.Success = false;
-                response.ErrorMessage = ex.Message;
                 response.IsContextLengthExceeded = IsContextLengthError(ex.Message);
+                // User-facing text is sanitized+localized; raw detail goes to the log.
+                response.ErrorMessage = LlmErrorPresenter.ToUserMessage(ex);
                 Logger.LogError("LlmOrchestration.SendMessage", ex);
             }
             finally
@@ -165,15 +189,14 @@ namespace Bibim.Core
         /// <summary>
         /// Non-streaming single-turn call without tools (lightweight requests, e.g. Task Planner).
         /// </summary>
-        /// <param name="jsonMode">When true, ask the provider for JSON-only output
-        /// using its native flag (OpenAI / Gemini). Anthropic ignores this flag
-        /// and follows JSON-only instructions in the system prompt.</param>
+        /// <param name="options">Effort / JSON schema / JSON mode for this call (the
+        /// planner passes its response schema here).</param>
         public async Task<LlmResponse> SendMessageNonStreamingAsync(
             List<ChatMessage> history,
             string systemPrompt,
-            int maxTokens = 1024,
+            int maxTokens = 4096,
             CancellationToken ct = default,
-            bool jsonMode = false)
+            LlmRequestOptions options = null)
         {
             var requestId = Guid.NewGuid().ToString("N").Substring(0, 8);
             var sw = Stopwatch.StartNew();
@@ -182,7 +205,8 @@ namespace Bibim.Core
             try
             {
                 JArray messages = BuildMessagesArray(history);
-                var raw = await _provider.SendNonStreamingAsync(messages, systemPrompt, null, ct, maxTokens, jsonMode);
+                var raw = await _provider.CreateMessageAsync(messages, systemPrompt, null, ct,
+                    ClampMaxTokens(maxTokens), options);
 
                 string text = ExtractTextFromContent(raw["content"] as JArray);
                 int inTok = raw["usage"]?["input_tokens"]?.Value<int>() ?? 0;
@@ -195,7 +219,14 @@ namespace Bibim.Core
                 response.OutputTokens = outTok;
                 response.CachedInputTokens = cachedTok;
                 response.CacheCreationInputTokens = cacheCreateTok;
+                response.StopReason = raw["stop_reason"]?.ToString();
                 response.Success = true;
+                if (response.StopReason == "refusal")
+                {
+                    response.Success = false;
+                    response.IsRefusal = true;
+                    response.ErrorMessage = LlmErrorPresenter.RefusalMessage();
+                }
 
                 OnTokenUsage?.Invoke(new TokenUsageInfo
                 {
@@ -217,8 +248,8 @@ namespace Bibim.Core
             catch (Exception ex)
             {
                 response.Success = false;
-                response.ErrorMessage = ex.Message;
                 response.IsContextLengthExceeded = IsContextLengthError(ex.Message);
+                response.ErrorMessage = LlmErrorPresenter.ToUserMessage(ex);
                 Logger.LogError("LlmOrchestration.NonStreaming", ex);
             }
 
@@ -227,7 +258,7 @@ namespace Bibim.Core
 
         /// <summary>
         /// Agent tool-use loop with Roslyn-driven self-correction.
-        /// Provider-agnostic — works with Anthropic / OpenAI / Gemini via ILlmProvider.
+        /// Provider-agnostic — works with Anthropic / OpenAI / Local via ILlmProvider.
         /// </summary>
         public async Task<CodeGenerationResult> GenerateWithToolsAsync(
             List<ChatMessage> history,
@@ -243,9 +274,35 @@ namespace Bibim.Core
             // and continues — exactly mirroring the existing compile-error feedback loop.
             // null + maxRuntimeRetries=0 ⇒ disabled, behaviour identical to before.
             Func<CompilationResult, CancellationToken, Task<DryRunOutcome>> dryRunValidator = null,
-            int maxRuntimeRetries = 0)
+            int maxRuntimeRetries = 0,
+            string effort = null)
         {
             var requestId = Guid.NewGuid().ToString("N").Substring(0, 8);
+            var modelInfo = ModelCatalog.Describe(_provider.ModelId);
+            // Thinking models spend part of max_tokens on reasoning; Anthropic turns stream
+            // on the wire, so a large ceiling carries no HTTP-timeout risk.
+            int turnMaxTokens = ClampMaxTokens(32000);
+
+            // Live progress: the banner shows what the model is doing inside a turn
+            // (reasoning summary / prose / "writing code (N lines)"), throttled so the
+            // bridge is not flooded with one message per token.
+            var narrator = new ProgressNarrator();
+            var progressClock = Stopwatch.StartNew();
+            long lastProgressMs = -1000;
+            string turnLabel = null;
+            var requestOptions = new LlmRequestOptions
+            {
+                Effort = effort,
+                OnProgress = (kind, delta) =>
+                {
+                    string snippet = narrator.Feed(kind, delta);
+                    if (snippet == null || turnLabel == null) return;
+                    long now = progressClock.ElapsedMilliseconds;
+                    if (now - lastProgressMs < 350) return;
+                    lastProgressMs = now;
+                    OnStatusUpdate?.Invoke(turnLabel + " · " + snippet);
+                }
+            };
             var result = new CodeGenerationResult
             {
                 RequestId = requestId,
@@ -254,6 +311,15 @@ namespace Bibim.Core
 
             JArray messages = BuildMessagesArray(history);
             int runtimeRetries = 0;
+            int compileFailures = 0;
+            // Last successfully-compiled candidate. When a retry round ([RUNTIME
+            // VALIDATION] / [COMPILE_ERROR]) is answered with PROSE instead of code
+            // ("the 0-element result is correct because..."), the working code must
+            // not be thrown away — field log 2026-07-13: an export task ended
+            // Completed with no Apply button because the explanation was accepted
+            // as a terminal non-code answer.
+            string lastGoodCode = null;
+            CompilationResult lastGoodCompile = null;
 
             try
             {
@@ -261,29 +327,30 @@ namespace Bibim.Core
                 {
                     ct.ThrowIfCancellationRequested();
 
-                    OnStatusUpdate?.Invoke(turn == 0 ? "Generating code..." : "Thinking...");
+                    turnLabel = (turn == 0 ? L("Generating code...", "코드 생성 중...") : L("Thinking...", "다음 단계 생각 중...")) + $" ({turn + 1}/{maxTurns})";
+                    narrator.Reset();
+                    OnStatusUpdate?.Invoke(turnLabel);
                     Logger.Log("LlmOrchestration",
                         $"rid={requestId} provider={_provider.ProviderName} model={_provider.ModelId} tool-turn={turn}");
 
                     JObject response;
                     try
                     {
-                        // 8192 ceiling. max_tokens is a HARD LIMIT — providers bill by
-                        // actual emitted tokens, not by ceiling, so a higher cap costs
-                        // nothing when the model emits less. The earlier 4096 cap was
-                        // tight for reasoning models (GPT-5.5 / Sonnet 4.6) which often
-                        // emit ~3-5k of pre-tool reasoning + tool_use + commentary on
-                        // multi-step requests with long history, hitting truncation
-                        // mid-response. The Fix B coercion below handles the rare
-                        // post-8192 truncation correctly even when it does happen.
-                        response = await _provider.SendNonStreamingAsync(
-                            messages, systemPrompt, toolDefinitions, ct, 8192);
+                        // turnMaxTokens (32k, clamped per model) is a HARD LIMIT on
+                        // thinking + text + tool input together — providers bill emitted
+                        // tokens, not the ceiling, so headroom costs nothing. Thinking-by-
+                        // default models (Sonnet 5 / Opus 5.x / Fable) truncated at the old
+                        // 8192. Anthropic turns stream, so the ceiling has no HTTP-timeout
+                        // cost. The tool_use coercion below still covers a truncated turn.
+                        response = await _provider.CreateMessageAsync(
+                            messages, systemPrompt, toolDefinitions, ct, turnMaxTokens, requestOptions);
                     }
+                    catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
                     catch (Exception ex)
                     {
                         result.Success = false;
-                        result.ErrorMessage = $"API request failed: {ex.Message}";
                         result.IsContextLengthExceeded = IsContextLengthError(ex.Message);
+                        result.ErrorMessage = LlmErrorPresenter.ToUserMessage(ex);
                         Logger.LogError("LlmOrchestration.GenerateWithToolsAsync", ex);
                         return result;
                     }
@@ -343,6 +410,19 @@ namespace Bibim.Core
                         stopReason = "tool_use";
                     }
 
+                    // ── refusal: a safety classifier (or the model) declined and any
+                    // server-side fallback declined too. Never treat as code/clarification.
+                    if (stopReason == "refusal")
+                    {
+                        Logger.Log("LlmOrchestration",
+                            $"rid={requestId} turn={turn} stop_reason=refusal details={response["stop_details"]?.ToString(Newtonsoft.Json.Formatting.None)}");
+                        result.Success = false;
+                        result.IsRefusal = true;
+                        result.ErrorMessage = LlmErrorPresenter.RefusalMessage();
+                        OnStatusUpdate?.Invoke(null);
+                        return result;
+                    }
+
                     // ── end_turn / max_tokens: model finished or was truncated ──
                     if (stopReason == "end_turn" || stopReason == "max_tokens")
                     {
@@ -370,6 +450,22 @@ namespace Bibim.Core
                                 continue;
                             }
 
+                            // Non-code response. If a retry round already produced
+                            // working code, the model is explaining ("result is
+                            // correct as-is") rather than clarifying — deliver the
+                            // last good code so the preview→Apply flow proceeds.
+                            if (lastGoodCompile != null && (runtimeRetries > 0 || compileFailures > 0))
+                            {
+                                Logger.Log("LlmOrchestration",
+                                    $"rid={requestId} non-code reply after retry — falling back to last compiled code");
+                                result.GeneratedCode = lastGoodCode;
+                                result.CompilationResult = lastGoodCompile;
+                                result.IsCodeResponse = true;
+                                result.Success = true;
+                                OnStatusUpdate?.Invoke(null);
+                                return result;
+                            }
+
                             // Non-code response (e.g. clarification)
                             result.Success = true;
                             result.IsCodeResponse = false;
@@ -381,12 +477,14 @@ namespace Bibim.Core
                         result.IsCodeResponse = true;
                         result.CompileAttempts = turn + 1;
 
-                        OnStatusUpdate?.Invoke("Compiling...");
+                        OnStatusUpdate?.Invoke(L("Compiling...", "코드 컴파일 검사 중...") + $" ({turn + 1}/{maxTurns})");
                         var compileResult = _compiler.Compile(code);
                         result.CompilationResult = compileResult;
 
                         if (compileResult.Success)
                         {
+                            lastGoodCode = code;
+                            lastGoodCompile = compileResult;
                             // ── Runtime self-correction (안 A+) ──
                             // Compile OK ≠ runtime OK. If a validator is wired, run a
                             // dry-run preview; if it reports the result is wrong (runtime
@@ -400,7 +498,10 @@ namespace Bibim.Core
                             // Only the *regeneration* is bounded by maxRuntimeRetries.
                             if (dryRunValidator != null)
                             {
-                                OnStatusUpdate?.Invoke("Validating (preview)...");
+                                // NOTE: both labels are matched by frontend LoadingModal.
+                                // REVIT_EXECUTING_LABELS (Revit is executing — Stop must not
+                                // abort). Keep in sync when rewording.
+                                OnStatusUpdate?.Invoke(L("Validating (preview)...", "미리 검증 실행 중..."));
                                 DryRunOutcome outcome = null;
                                 try
                                 {
@@ -424,6 +525,15 @@ namespace Bibim.Core
                                     CodegenDebugRecorder.WriteText(debugDirectory,
                                         $"tool_turn_{turn:00}_runtime_validation.txt",
                                         outcome.FeedbackText ?? "(no feedback text)");
+
+                                    // Prune prior retry rounds (compile OR runtime) the same
+                                    // way the compile path does — without this, runtime-retry
+                                    // pairs re-sent the full failed code every following turn.
+                                    // Append-only models (preserved thinking) must never have
+                                    // earlier turns removed: their thinking blocks would be
+                                    // invalidated. The cached re-read is cheap on those models.
+                                    if (!modelInfo.AppendOnlyHistory)
+                                        PrunePriorCompileAttempts(messages);
 
                                     messages.Add(new JObject { ["role"] = "assistant", ["content"] = content });
                                     messages.Add(new JObject
@@ -452,14 +562,21 @@ namespace Bibim.Core
                             // failed code + latest feedback. Older attempts are summarised
                             // into a single short marker so the model still knows it's
                             // already retried, without re-sending the full failed code each turn.
-                            int prunedAttempts = PrunePriorCompileAttempts(messages);
-                            bool isFirstFailure = prunedAttempts == 0;
+                            //
+                            // isFirstFailure must track COMPILE failures, not pruned pairs:
+                            // the prune also removes [RUNTIME VALIDATION] rounds, and the
+                            // first real compile failure still needs the full Rules block
+                            // (and must not be mislabeled "retry attempt #2").
+                            compileFailures++;
+                            if (!modelInfo.AppendOnlyHistory)
+                                PrunePriorCompileAttempts(messages);
+                            bool isFirstFailure = compileFailures == 1;
 
                             messages.Add(new JObject { ["role"] = "assistant", ["content"] = content });
                             messages.Add(new JObject
                             {
                                 ["role"] = "user",
-                                ["content"] = BuildCompileErrorFeedback(compileResult, isFirstFailure, prunedAttempts)
+                                ["content"] = BuildCompileErrorFeedback(compileResult, isFirstFailure, compileFailures - 1)
                             });
                             continue;
                         }
@@ -497,7 +614,7 @@ namespace Bibim.Core
                                 continue;
                             }
 
-                            OnStatusUpdate?.Invoke($"Using {toolName}...");
+                            OnStatusUpdate?.Invoke(GetToolStatusLabel(toolName) + $" ({turn + 1}/{maxTurns})");
                             Logger.Log("LlmOrchestration", $"rid={requestId} tool={toolName}");
 
                             string toolOutput;
@@ -518,7 +635,6 @@ namespace Bibim.Core
                             {
                                 ["type"] = "tool_result",
                                 ["tool_use_id"] = toolId,
-                                ["name"] = toolName,    // kept for Gemini adapter; stripped by AnthropicProvider
                                 ["content"] = toolOutput
                             });
                         }
@@ -561,8 +677,8 @@ namespace Bibim.Core
             catch (Exception ex)
             {
                 result.Success = false;
-                result.ErrorMessage = ex.Message;
                 result.IsContextLengthExceeded = IsContextLengthError(ex.Message);
+                result.ErrorMessage = LlmErrorPresenter.ToUserMessage(ex);
                 Logger.LogError("LlmOrchestration.GenerateWithToolsAsync", ex);
             }
             finally
@@ -670,7 +786,11 @@ namespace Bibim.Core
                 string userContent = userMsg["content"]?.Type == JTokenType.String
                     ? userMsg["content"].ToString()
                     : string.Empty;
-                if (userContent == null || !userContent.StartsWith("[COMPILE_ERROR]", StringComparison.Ordinal))
+                bool isRetryFeedback =
+                    userContent != null &&
+                    (userContent.StartsWith("[COMPILE_ERROR]", StringComparison.Ordinal) ||
+                     userContent.StartsWith("[RUNTIME VALIDATION]", StringComparison.Ordinal));
+                if (!isRetryFeedback)
                     break;
 
                 var assistantMsg = messages[i - 1] as JObject;
@@ -702,7 +822,30 @@ namespace Bibim.Core
             return false;
         }
 
-        private static bool IsContextLengthError(string message)
+
+        /// <summary>Language-aware literal for progress-banner status strings.
+        /// These bypass the UI i18n table (they originate here in C#), so localize
+        /// at the source — English status text on a Korean panel reads as broken.</summary>
+        private static string L(string en, string kr) => AppLanguage.Pick(en, kr);
+
+        /// <summary>Friendly progress label per tool — never leak internal tool names
+        /// like "search_revit_api" to the banner.</summary>
+        private static string GetToolStatusLabel(string toolName)
+        {
+            switch (toolName)
+            {
+                case "search_revit_api": return L("Searching Revit API docs...", "Revit API 자료 검색 중...");
+                case "run_roslyn_check": return L("Checking the code...", "코드 검사 중...");
+                case "search_code_library": return L("Searching the Code Library...", "코드 보관함 검색 중...");
+                case "count_elements":
+                case "list_elements": return L("Querying model elements...", "모델 요소 조회 중...");
+                default:                 return L("Reading model context...", "모델 정보 확인 중...");
+            }
+        }
+
+        // Public: the planner-failure gate in BibimDockablePanelProvider reuses this
+        // to route context-length failures to "start a new session" guidance.
+        public static bool IsContextLengthError(string message)
         {
             if (string.IsNullOrEmpty(message)) return false;
             return message.IndexOf("prompt is too long", StringComparison.OrdinalIgnoreCase) >= 0 ||
@@ -710,11 +853,20 @@ namespace Bibim.Core
                    message.IndexOf("maximum context length", StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        /// <summary>Respect the model's output ceiling (local servers are small).</summary>
+        private int ClampMaxTokens(int requested)
+        {
+            int ceiling = ModelCatalog.Describe(_provider.ModelId).MaxOutputTokens;
+            return ceiling > 0 ? Math.Min(requested, ceiling) : requested;
+        }
+
         private static HttpClient CreateHttpClient()
         {
+            // Non-streaming calls (planner, OpenAI tool turns) are bounded here; long
+            // Anthropic tool turns stream and are guarded by the SSE idle timeout instead.
             var client = new HttpClient
             {
-                Timeout = TimeSpan.FromMinutes(5)
+                Timeout = TimeSpan.FromMinutes(10)
             };
             return client;
         }
@@ -732,7 +884,22 @@ namespace Bibim.Core
         public int OutputTokens { get; set; }
         public int CachedInputTokens { get; set; }
         public int CacheCreationInputTokens { get; set; }
+
+        /// <summary>
+        /// Total input the provider actually processed: fresh + cache-read +
+        /// cache-creation. InputTokens alone excludes the cache line items and
+        /// structurally UNDERCOUNTS real usage — use this for anything shown to
+        /// the user or logged for cost accounting.
+        /// </summary>
+        public int ProcessedInputTokens => InputTokens + CachedInputTokens + CacheCreationInputTokens;
+
         public bool IsContextLengthExceeded { get; set; }
+
+        /// <summary>Provider stop reason for non-streaming calls.</summary>
+        public string StopReason { get; set; }
+
+        /// <summary>The model / safety classifier declined (stop_reason "refusal").</summary>
+        public bool IsRefusal { get; set; }
     }
 
     public class CodeGenerationResult
@@ -749,8 +916,14 @@ namespace Bibim.Core
         public int TotalOutputTokens { get; set; }
         public int TotalCachedInputTokens { get; set; }
         public int TotalCacheCreationInputTokens { get; set; }
+
+        /// <summary>See LlmResponse.ProcessedInputTokens — same rule, loop totals.</summary>
+        public int TotalProcessedInputTokens => TotalInputTokens + TotalCachedInputTokens + TotalCacheCreationInputTokens;
         public string DebugArtifactDirectory { get; set; }
         public bool IsContextLengthExceeded { get; set; }
+
+        /// <summary>The model / safety classifier declined (stop_reason "refusal").</summary>
+        public bool IsRefusal { get; set; }
     }
 
     public class TokenUsageInfo

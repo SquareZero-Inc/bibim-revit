@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using Newtonsoft.Json.Linq;
 
@@ -21,13 +22,17 @@ namespace Bibim.Core
             public string RagStore { get; set; }
             public string RevitVersion { get; set; }
             public string DynamoVersion { get; set; }
-            public string ClaudeModel { get; set; }       // selected model id (kept as "claude_model" key for back-compat — may hold gpt-5.5 / gemini-* in v1.1+)
-            public string GeminiModel { get; set; }       // legacy RAG-era field; not used by LLM in v1.1+
-            // Multi-provider LLM keys (v1.1.0+). ClaudeApiKey kept as alias for AnthropicApiKey for migration.
+            public string ClaudeModel { get; set; }       // selected model id (kept as "claude_model" key for back-compat — may hold any catalog id, e.g. gpt-6-sol)
+            // Optional cheaper model for the PLANNER call only (classification /
+            // question generation doesn't need the premium codegen model). Applied
+            // in EnsurePlannerService; ignored when empty or when its provider has
+            // no key. Non-local providers only.
+            public string PlannerModel { get; set; }
+            // Provider keys. Stored DPAPI-encrypted ("dpapi:..."), held decrypted here.
+            // ClaudeApiKey kept as alias for AnthropicApiKey for migration.
             public string AnthropicApiKey { get; set; }
             public string ClaudeApiKey { get; set; }      // legacy alias — same value as AnthropicApiKey
             public string OpenAiApiKey { get; set; }
-            public string GeminiApiKey { get; set; }
             // Self-hosted local LLM (v1.1+). Server runs an OpenAI-compatible
             // /v1/chat/completions endpoint (Ollama / LM Studio / vLLM / llama.cpp server).
             // ApiKey is optional — only needed for authenticated self-hosted setups.
@@ -50,33 +55,29 @@ namespace Bibim.Core
             public int SelfCorrectionMaxRetries { get; set; }  // runtime regenerations per task
             public int SelfCorrectionScaleGuard { get; set; }  // affected>this ⇒ skip (dry-run too costly)
 
+            // LLM request tuning (v1.2.0+, optional "llm" object in rag_config.json).
+            // Effort maps to Anthropic output_config.effort / OpenAI reasoning.effort.
+            public string EffortPlanner { get; set; }   // default "low"  — classification + questions
+            public string EffortChat { get; set; }      // default "medium"
+            public string EffortCodegen { get; set; }   // default "high" — tool loop
+            public string PromptCacheTtl { get; set; }  // "1h" (default) | "5m" for the tools+system prefix
+
             // Version-specific RAG stores map (e.g., "2025" → "fileSearchStores/...")
             public Dictionary<string, string> Stores { get; set; }
             public string FallbackStore { get; set; }
         }
 
         /// <summary>
-        /// Models exposed in the UI in v1.1.0. Order = display order in selectors.
+        /// Models exposed in the UI. Order = display order in selectors. Derived from
+        /// <see cref="ModelCatalog"/> — edit the catalog, not this list.
         /// </summary>
         public static readonly (string Id, string Label, string Provider)[] AvailableModels =
-        {
-            ("claude-sonnet-4-6",          "Claude Sonnet 4.6",  "anthropic"),
-            ("claude-opus-4-7",             "Claude Opus 4.7",    "anthropic"),
-            ("gpt-5.5",                     "GPT-5.5",            "openai"),
-            // Vanilla 3.1 Pro — the customtools variant silently misbehaves
-            // on JSON-only output without registered tools (planner case).
-            ("gemini-3.1-pro-preview",      "Gemini 3.1 Pro",     "gemini"),
-            // Self-hosted local LLM — single entry in the model picker. The actual
-            // server-side model is resolved at runtime from LocalModelName override
-            // OR a /v1/models auto-discovery probe in LocalProvider. The frontend
-            // shows the active model name in the option's note field.
-            ("local",                       "Local LLM (Self-hosted)", "local"),
-        };
+            ModelCatalog.Models.Select(m => (m.Id, m.Label, m.Provider)).ToArray();
 
         /// <summary>
         /// Default model when none is configured.
         /// </summary>
-        public const string DefaultModelId = "claude-sonnet-4-6";
+        public const string DefaultModelId = ModelCatalog.DefaultModelId;
 
         public static RagConfig GetRagConfig()
         {
@@ -139,30 +140,11 @@ namespace Bibim.Core
 
             if (obj["api_keys"] == null)
                 obj["api_keys"] = new JObject();
-            ((JObject)obj["api_keys"])["claude_api_key"] = apiKey.Trim();
+            ((JObject)obj["api_keys"])["claude_api_key"] = SecretProtector.Protect(apiKey.Trim());
 
             // Set default model for first-time setup so GetRagConfig() doesn't throw
             if (string.IsNullOrEmpty(obj["claude_model"]?.ToString()))
-                obj["claude_model"] = "claude-sonnet-4-6";
-
-            File.WriteAllText(configPath, obj.ToString(Newtonsoft.Json.Formatting.Indented));
-            ClearCache();
-        }
-
-        /// <summary>
-        /// Saves a new Gemini API key to rag_config.json and reloads the config cache.
-        /// </summary>
-        public static void SaveGeminiApiKey(string apiKey)
-        {
-            if (string.IsNullOrWhiteSpace(apiKey))
-                throw new ArgumentException("Gemini API key must not be empty.");
-
-            string configPath = GetConfigPath();
-            var obj = ReadConfigJson(configPath);
-
-            if (obj["api_keys"] == null)
-                obj["api_keys"] = new JObject();
-            ((JObject)obj["api_keys"])["gemini_api_key"] = apiKey.Trim();
+                obj["claude_model"] = DefaultModelId;
 
             File.WriteAllText(configPath, obj.ToString(Newtonsoft.Json.Formatting.Indented));
             ClearCache();
@@ -183,21 +165,6 @@ namespace Bibim.Core
 
             File.WriteAllText(configPath, obj.ToString(Newtonsoft.Json.Formatting.Indented));
             ClearCache();
-        }
-
-        /// <summary>
-        /// Returns masked Gemini API key for display. Returns empty string if not configured.
-        /// </summary>
-        public static string GetMaskedGeminiApiKey()
-        {
-            try
-            {
-                string key = GetRagConfig()?.GeminiApiKey ?? "";
-                if (string.IsNullOrEmpty(key)) return "";
-                if (key.Length <= 12) return new string('*', key.Length);
-                return key.Substring(0, 8) + "..." + key.Substring(key.Length - 4);
-            }
-            catch { return ""; }
         }
 
         /// <summary>
@@ -290,8 +257,9 @@ namespace Bibim.Core
         private static RagConfig LoadRagConfig()
         {
             string store = null, version = null, dynamoVersion = null;
-            string claudeModel = null, geminiModel = null;
-            string anthropicApiKey = null, openAiApiKey = null, geminiApiKey = null, localApiKey = null;
+            string claudeModel = null, plannerModel = null;
+            string anthropicApiKey = null, openAiApiKey = null, localApiKey = null;
+            string effortPlanner = "low", effortChat = "medium", effortCodegen = "high", promptCacheTtl = "1h";
             string localServerUrl = null, localModelName = null;
             string fallbackStore = null;
             Dictionary<string, string> stores = null;
@@ -306,45 +274,49 @@ namespace Bibim.Core
             {
                 string configPath = GetReadConfigPath();
 
-                if (!File.Exists(configPath))
-                    throw new FileNotFoundException($"rag_config.json not found at: {configPath}");
-
-                string json = File.ReadAllText(configPath);
-
-                var obj = JObject.Parse(json);
+                JObject obj;
+                if (File.Exists(configPath))
+                {
+                    string json = File.ReadAllText(configPath);
+                    obj = JObject.Parse(json);
+                }
+                else
+                {
+                    // No config anywhere (fresh install, wiped AppData, or an installer
+                    // that shipped without a default file). Start with built-in defaults
+                    // instead of crashing the panel — credentials can still come from
+                    // env vars or Settings.
+                    Logger.Log("ConfigService",
+                        $"rag_config.json not found at {configPath} — starting with defaults.");
+                    obj = new JObject();
+                }
                 store = obj["active_store"]?.ToString() ?? obj["fallback_store"]?.ToString();
                 version = obj["detected_revit_version"]?.ToString() ?? obj["fallback_version"]?.ToString();
                 dynamoVersion = obj["detected_dynamo_version"]?.ToString();
                 claudeModel = obj["claude_model"]?.ToString();
-                geminiModel = obj["gemini_model"]?.ToString();
+                plannerModel = obj["planner_model"]?.ToString();
 
-                // Migration: the customtools variant of Gemini 3.1 Pro is specialized
-                // for agentic workflows with registered tools and silently misbehaves
-                // on JSON-only output without tools (planner case). Vanilla variant
-                // is the supported choice. Migrate existing configs in place + rewrite
-                // disk so old saved configs upgrade automatically on next launch.
-                if (string.Equals(claudeModel, "gemini-3.1-pro-preview-customtools",
-                        StringComparison.OrdinalIgnoreCase))
+                // Migration (v1.2.0): the Gemini provider was removed. A stored gemini-*
+                // selection (including the old -customtools variant) moves to the default
+                // model so the panel keeps working after the upgrade.
+                if (!string.IsNullOrEmpty(claudeModel))
                 {
-                    claudeModel = "gemini-3.1-pro-preview";
-                    try
+                    string migrated = ModelCatalog.MigrateModelId(claudeModel);
+                    if (!string.Equals(migrated, claudeModel, StringComparison.Ordinal))
                     {
+                        string prior = claudeModel;
+                        claudeModel = migrated;
                         obj["claude_model"] = claudeModel;
-                        // One-time migration backup to mirror SaveApiKeyForProvider behaviour.
-                        string bakPath = configPath + ".bak";
-                        if (!File.Exists(bakPath))
-                        {
-                            try { File.Copy(configPath, bakPath); } catch { /* non-fatal */ }
-                        }
-                        File.WriteAllText(configPath, obj.ToString(Newtonsoft.Json.Formatting.Indented));
-                        Logger.Log("ConfigService",
-                            "Migrated saved model id 'gemini-3.1-pro-preview-customtools' → 'gemini-3.1-pro-preview' (rewrote rag_config.json).");
+                        if (TryRewriteConfig(configPath, obj))
+                            Logger.Log("ConfigService",
+                                $"Migrated saved model id '{prior}' → '{claudeModel}' (provider removed; rewrote rag_config.json).");
                     }
-                    catch (Exception migEx)
-                    {
-                        Logger.Log("ConfigService",
-                            $"In-memory migration applied; disk rewrite skipped: {migEx.Message}");
-                    }
+                }
+                if (!string.IsNullOrEmpty(plannerModel) &&
+                    !string.Equals(ModelCatalog.MigrateModelId(plannerModel), plannerModel, StringComparison.Ordinal))
+                {
+                    // A planner override pointing at a removed provider is simply dropped.
+                    plannerModel = null;
                 }
 
                 // Migration (v1.1.x+): older builds stored OSS vendor-prefixed
@@ -394,12 +366,25 @@ namespace Bibim.Core
 
                 if (obj["api_keys"] is JObject apiKeys)
                 {
+                    // At-rest encryption (v1.2.0): plaintext keys from older versions or
+                    // manual edits are re-saved DPAPI-encrypted before being read.
+                    if (EncryptPlaintextKeys(apiKeys) && TryRewriteConfig(configPath, obj))
+                        Logger.Log("ConfigService", "Encrypted plaintext API keys in rag_config.json (DPAPI, current user).");
+
                     // Read new canonical key names; fall back to legacy claude_api_key for migration.
-                    anthropicApiKey = apiKeys["anthropic_api_key"]?.ToString()
-                                   ?? apiKeys["claude_api_key"]?.ToString();
-                    openAiApiKey   = apiKeys["openai_api_key"]?.ToString();
-                    geminiApiKey   = apiKeys["gemini_api_key"]?.ToString();
-                    localApiKey    = apiKeys["local_api_key"]?.ToString();
+                    anthropicApiKey = SecretProtector.Unprotect(apiKeys["anthropic_api_key"]?.ToString())
+                                   ?? SecretProtector.Unprotect(apiKeys["claude_api_key"]?.ToString());
+                    openAiApiKey   = SecretProtector.Unprotect(apiKeys["openai_api_key"]?.ToString());
+                    localApiKey    = SecretProtector.Unprotect(apiKeys["local_api_key"]?.ToString());
+                }
+
+                if (obj["llm"] is JObject llmObj)
+                {
+                    effortPlanner  = NormalizeEffort(llmObj["effort_planner"]?.ToString(), effortPlanner);
+                    effortChat     = NormalizeEffort(llmObj["effort_chat"]?.ToString(), effortChat);
+                    effortCodegen  = NormalizeEffort(llmObj["effort_codegen"]?.ToString(), effortCodegen);
+                    string ttl = llmObj["prompt_cache_ttl"]?.ToString();
+                    if (string.Equals(ttl, "5m", StringComparison.OrdinalIgnoreCase)) promptCacheTtl = "5m";
                 }
 
                 if (obj["local"] is JObject localObj)
@@ -416,9 +401,6 @@ namespace Bibim.Core
 
                 string envOpenAi = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
                 if (!string.IsNullOrEmpty(envOpenAi)) openAiApiKey = envOpenAi;
-
-                string envGemini = Environment.GetEnvironmentVariable("GEMINI_API_KEY");
-                if (!string.IsNullOrEmpty(envGemini)) geminiApiKey = envGemini;
 
                 // Local LLM env overrides (CI / scripted installs / cloud GPU rentals)
                 string envLocalUrl = Environment.GetEnvironmentVariable("BIBIM_LOCAL_LLM_URL");
@@ -474,11 +456,10 @@ namespace Bibim.Core
                 RevitVersion = version,
                 DynamoVersion = dynamoVersion ?? "Unknown",
                 ClaudeModel = claudeModel,
-                GeminiModel = geminiModel ?? "",
+                PlannerModel = plannerModel,
                 AnthropicApiKey = anthropicApiKey,
                 ClaudeApiKey = anthropicApiKey,        // legacy alias — same value
                 OpenAiApiKey = openAiApiKey,
-                GeminiApiKey = geminiApiKey,
                 LocalServerUrl = localServerUrl,
                 LocalApiKey = localApiKey,
                 LocalModelName = localModelName,
@@ -492,8 +473,78 @@ namespace Bibim.Core
                 ValidationRolloutPhase = validationRolloutPhase,
                 SelfCorrectionEnabled = selfCorrectionEnabled,
                 SelfCorrectionMaxRetries = selfCorrectionMaxRetries < 0 ? 0 : selfCorrectionMaxRetries,
-                SelfCorrectionScaleGuard = selfCorrectionScaleGuard < 0 ? 0 : selfCorrectionScaleGuard
+                SelfCorrectionScaleGuard = selfCorrectionScaleGuard < 0 ? 0 : selfCorrectionScaleGuard,
+                EffortPlanner = effortPlanner,
+                EffortChat = effortChat,
+                EffortCodegen = effortCodegen,
+                PromptCacheTtl = promptCacheTtl
             };
+        }
+
+        private static string NormalizeEffort(string value, string fallback)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return fallback;
+            string v = value.Trim().ToLowerInvariant();
+            return v == "low" || v == "medium" || v == "high" ? v : fallback;
+        }
+
+        /// <summary>Encrypt any plaintext provider key in place. Returns true if anything changed.</summary>
+        private static bool EncryptPlaintextKeys(JObject apiKeys)
+        {
+            bool changed = false;
+            foreach (var prop in apiKeys.Properties().ToList())
+            {
+                if (!prop.Name.EndsWith("_api_key", StringComparison.OrdinalIgnoreCase)) continue;
+                if (prop.Value == null || prop.Value.Type != JTokenType.String) continue;
+                string v = prop.Value.ToString();
+                if (!SecretProtector.NeedsProtection(v)) continue;
+                try
+                {
+                    prop.Value = SecretProtector.Protect(v.Trim());
+                    changed = true;
+                }
+                catch (Exception ex)
+                {
+                    Logger.Log("ConfigService", $"Key encryption skipped for {prop.Name}: {ex.GetType().Name}");
+                }
+            }
+            return changed;
+        }
+
+        /// <summary>
+        /// Rewrite rag_config.json after an in-place migration, keeping a one-time .bak.
+        /// Only rewrites the per-user AppData copy — never the installer default beside
+        /// the DLL (read-only under Program Files).
+        /// </summary>
+        private static bool TryRewriteConfig(string configPath, JObject obj)
+        {
+            try
+            {
+                string userPath = GetConfigPath();
+                if (!string.Equals(Path.GetFullPath(configPath), Path.GetFullPath(userPath), StringComparison.OrdinalIgnoreCase))
+                    return false;
+                string bakPath = configPath + ".bak";
+                if (File.Exists(configPath) && !File.Exists(bakPath))
+                {
+                    try { File.Copy(configPath, bakPath); } catch { /* non-fatal */ }
+                }
+                File.WriteAllText(configPath, obj.ToString(Newtonsoft.Json.Formatting.Indented));
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("ConfigService", $"In-memory migration applied; disk rewrite skipped: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Anthropic Messages endpoint override (null = api.anthropic.com). Extension point
+        /// for routing through a self-hosted gateway; the public build always returns null.
+        /// </summary>
+        public static string GetAnthropicEndpoint()
+        {
+            return null;
         }
 
         // ────────────────────────────────────────────────────────────
@@ -534,7 +585,6 @@ namespace Bibim.Core
             {
                 case "anthropic": return cfg.AnthropicApiKey;
                 case "openai":    return cfg.OpenAiApiKey;
-                case "gemini":    return cfg.GeminiApiKey;
                 // For "local", a key is OPTIONAL — most self-hosted setups (Ollama default,
                 // LM Studio default) accept unauthenticated requests. Returning the value
                 // (which may be empty) lets the caller decide whether to add a bearer header.
@@ -558,13 +608,12 @@ namespace Bibim.Core
             }
 
             string key = GetApiKeyForProvider(providerName);
-            return !string.IsNullOrWhiteSpace(key) && key != "CLAUDE_API_KEY_HERE"
-                && key != "OPENAI_API_KEY_HERE" && key != "GEMINI_API_KEY_HERE";
+            return !string.IsNullOrWhiteSpace(key) && !SecretProtector.IsPlaceholder(key);
         }
 
         /// <summary>
-        /// Save an API key for a specific provider. Writes to api_keys.{anthropic|openai|gemini}_api_key.
-        /// For backwards compat, anthropic also mirrors to claude_api_key.
+        /// Save an API key for a specific provider. Writes to api_keys.{anthropic|openai}_api_key
+        /// (DPAPI-encrypted). For backwards compat, anthropic also mirrors to claude_api_key.
         /// </summary>
         public static void SaveApiKeyForProvider(string providerName, string apiKey)
         {
@@ -589,18 +638,15 @@ namespace Bibim.Core
             if (obj["api_keys"] == null) obj["api_keys"] = new JObject();
             var apiKeys = (JObject)obj["api_keys"];
 
-            string trimmedKey = apiKey.Trim();
+            string protectedKey = SecretProtector.Protect(apiKey.Trim());
             switch (providerName)
             {
                 case "anthropic":
-                    apiKeys["anthropic_api_key"] = trimmedKey;
-                    apiKeys["claude_api_key"] = trimmedKey;   // legacy mirror for any older readers
+                    apiKeys["anthropic_api_key"] = protectedKey;
+                    apiKeys["claude_api_key"] = protectedKey;   // legacy mirror for any older readers
                     break;
                 case "openai":
-                    apiKeys["openai_api_key"] = trimmedKey;
-                    break;
-                case "gemini":
-                    apiKeys["gemini_api_key"] = trimmedKey;
+                    apiKeys["openai_api_key"] = protectedKey;
                     break;
                 default:
                     throw new ArgumentException($"Unknown provider: {providerName}");
@@ -645,7 +691,7 @@ namespace Bibim.Core
             // local API key lives alongside other provider keys under api_keys.
             if (obj["api_keys"] == null) obj["api_keys"] = new JObject();
             var apiKeys = (JObject)obj["api_keys"];
-            apiKeys["local_api_key"] = string.IsNullOrWhiteSpace(apiKey) ? null : apiKey.Trim();
+            apiKeys["local_api_key"] = string.IsNullOrWhiteSpace(apiKey) ? null : SecretProtector.Protect(apiKey.Trim());
 
             // Default model on first-time setup
             if (string.IsNullOrEmpty(obj["claude_model"]?.ToString()))

@@ -48,6 +48,7 @@ namespace Bibim.Core
             sb.AppendLine("rename/renumber: scope; naming pattern (prefix/suffix/format); on duplicate");
             sb.AppendLine("workset: which workset (only if worksets visible in [RESOLVED REVIT CONTEXT])");
             sb.AppendLine("distance/proximity: ref point on element A and B (bbox face/origin/face/connector); direction (closest/perpendicular/H/V)");
+            sb.AppendLine("dimension audit (난치수 / odd or non-round dimensions): ask ONE question — the allowed precision in mm (options: 정수 mm / 소수 첫째 자리 / 소수 둘째 자리). Default pairing is adjacent parallel elements (and grid-to-element when grids are involved); do not ask about pairing, direction or reference face.");
             sb.AppendLine("units/coords: input unit (mm/ft/project) if ambiguous; coord ref (Project Base Point vs Survey Point)");
             sb.AppendLine("geometry (loft/sweep/blend): solid vs void; split if > 20 profiles");
             sb.AppendLine("grid/level/refplane: spacing+count (XY separately for 2D); origin; naming; extent length; target level");
@@ -101,6 +102,7 @@ namespace Bibim.Core
             "이름", "번호", "설정", "선택", "필터", "찾", "검색", "목록",
             "개수", "카운트", "세어", "분석", "확인", "검토", "검증",
             "내보내", "내보내기", "출력", "저장", "불러", "로드", "분할", "합쳐", "합치",
+            "뽑아", "뽑고", "뽑을", "추출해", "만들어봐",
             "태그", "주석", "표시", "단면", "입면", "스케줄", "전송"
         };
 
@@ -124,8 +126,14 @@ namespace Bibim.Core
             string normalised = trimmed.TrimEnd('.', '!', '?', '~', ' ');
             if (_greetingsAndAcks.Contains(normalised)) return true;
 
-            // 2. Very short messages with no action verb
-            if (trimmed.Length < 12 && !ContainsActionVerb(trimmed)) return true;
+            // 2. (REMOVED 2026-07-13) The "<12 chars with no action verb" rule was
+            // calibrated for English. Korean packs a complete command into 7 chars
+            // ("엑셀로 뽑아봐") and conjugates verbs past any substring list, so the
+            // rule silently routed real work to un-executable direct chat — the
+            // worst field incident of the smoke test. Incremental prompt caching
+            // has since made the planner call nearly free (fresh input ~3 tokens),
+            // so only EXACT greeting/ack matches skip planning now. The verb lists
+            // above remain in use by ContainsWriteIntent, not by this gate.
 
             return false;
         }
@@ -135,6 +143,41 @@ namespace Bibim.Core
             foreach (var v in _actionVerbsEn)
                 if (text.IndexOf(v, StringComparison.OrdinalIgnoreCase) >= 0) return true;
             foreach (var v in _actionVerbsKr)
+                if (text.IndexOf(v, StringComparison.Ordinal) >= 0) return true;
+            return false;
+        }
+
+        // WRITE-intent verbs only — a deliberate subset of the action-verb lists above.
+        // Read verbs (find/list/count/확인/찾/개수...) are excluded on purpose: when the
+        // planner fails, a read question can still degrade safely to direct chat
+        // (chat cannot touch the model), but a write-looking request must halt.
+        private static readonly string[] _writeVerbsEn =
+        {
+            "create", "make", "place", "add", "copy", "duplicate", "move", "rotate",
+            "delete", "remove", "modify", "change", "edit", "set ", "fill", "rename",
+            "renumber", "split", "join", "merge", "align", "mirror", "offset"
+        };
+
+        private static readonly string[] _writeVerbsKr =
+        {
+            "만들", "생성", "배치", "추가", "복사", "복제", "이동", "옮겨", "회전",
+            "삭제", "지워", "지우", "제거", "수정", "변경", "바꿔", "바꾸", "편집",
+            "설정", "입력", "기입", "채워", "넣어", "분할", "합쳐", "합치", "정렬"
+        };
+
+        /// <summary>
+        /// Does the message look like it wants to CHANGE the model? Used as the safety
+        /// gate when the planner itself fails: write-intent requests must NOT silently
+        /// fall back to ungated direct chat (which would answer conversationally and
+        /// could read as "done" without the preview→confirm flow), while read-intent
+        /// questions still degrade gracefully to chat.
+        /// </summary>
+        public static bool ContainsWriteIntent(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            foreach (var v in _writeVerbsEn)
+                if (text.IndexOf(v, StringComparison.OrdinalIgnoreCase) >= 0) return true;
+            foreach (var v in _writeVerbsKr)
                 if (text.IndexOf(v, StringComparison.Ordinal) >= 0) return true;
             return false;
         }
