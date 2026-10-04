@@ -71,6 +71,35 @@ trap {
     exit 1
 }
 $root = Split-Path $PSCommandPath -Parent
+$buildStamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$gitHash = Get-GitShortHash -RepoRoot $root
+$buildId = if ($gitHash) { "${buildStamp}_${gitHash}" } else { $buildStamp }
+
+[xml]$csproj = Get-Content "$root\Bibim.Core\Bibim.Core.csproj"
+$appVersion = $csproj.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1 -ExpandProperty Version
+if ([string]::IsNullOrWhiteSpace($appVersion)) {
+    $appVersion = "0.0.0"
+}
+$informationalVersion = "$appVersion+$buildId"
+
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  BIBIM AI - Build Pipeline" -ForegroundColor Cyan
+Write-Host "  Config: $RevitConfig  Lang: $Lang" -ForegroundColor Gray
+Write-Host "  Version: $appVersion  BuildId: $buildId" -ForegroundColor Gray
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+
+if ($RevitSdkPath) {
+    $env:REVIT_SDK_PATH = $RevitSdkPath
+    Write-Host "[INFO] REVIT_SDK_PATH = $RevitSdkPath" -ForegroundColor Gray
+}
+
+# Fail fast on missing build metadata (an empty version/BuildId reaches Inno Setup as a
+# compile error only after the long build + signing steps).
+if ([string]::IsNullOrWhiteSpace($appVersion) -or [string]::IsNullOrWhiteSpace($buildId)) {
+    throw "Version or BuildId is empty (version='$appVersion', buildId='$buildId')."
+}
 
 # -- Step 0: Reset stale build artifacts (keep Output installers) --
 Write-Host "[0/5] Resetting stale build artifacts..." -ForegroundColor Yellow
