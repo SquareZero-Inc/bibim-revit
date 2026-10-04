@@ -54,6 +54,22 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 }
 
 $ErrorActionPreference = "Stop"
+
+# The elevated window closes as soon as the script ends, so a failure used to vanish with
+# its message. Log the whole run and keep the window open when something throws.
+$__logDir = Join-Path (Split-Path $PSCommandPath -Parent) "Bibim.Core\Output"
+New-Item -ItemType Directory -Force $__logDir | Out-Null
+$__log = Join-Path $__logDir ("build_log_" + (Get-Date -Format "yyyyMMdd_HHmmss") + ".txt")
+try { Start-Transcript -Path $__log -Force | Out-Null } catch { }
+trap {
+    Write-Host ""
+    Write-Host "BUILD FAILED: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "  at line $($_.InvocationInfo.ScriptLineNumber): $($_.InvocationInfo.Line.Trim())" -ForegroundColor Red
+    Write-Host "  Full log: $__log" -ForegroundColor Yellow
+    try { Stop-Transcript | Out-Null } catch { }
+    Read-Host "Press Enter to close"
+    exit 1
+}
 $root = Split-Path $PSCommandPath -Parent
 
 # -- Step 0: Reset stale build artifacts (keep Output installers) --
@@ -226,8 +242,11 @@ if (Test-Path $signtool) {
             & $signtool @signArgs $dll
             if ($LASTEXITCODE -ne 0) {
                 Write-Host "  WARNING: DLL signing failed for $tfName" -ForegroundColor DarkYellow
-            } elseif ((Get-AuthenticodeSignature $dll).Status -ne "Valid") {
-                throw "Signature on Bibim.Core.dll ($tfName) is not valid: $((Get-AuthenticodeSignature $dll).StatusMessage)"
+            } else {
+                & $signtool verify /pa /q $dll
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Signature on Bibim.Core.dll ($tfName) does not verify (signtool verify /pa). Check the certificate."
+                }
             }
         }
     }
@@ -290,10 +309,13 @@ if (Test-Path $signtool) {
         & $signtool @signArgs /v $setupExe.FullName
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  WARNING: Installer signing failed (USB token connected?)" -ForegroundColor Red
-        } elseif ((Get-AuthenticodeSignature $setupExe.FullName).Status -ne "Valid") {
-            Write-Host "  WARNING: Installer signature is NOT valid: $($setupExe.Name)" -ForegroundColor Red
         } else {
-            Write-Host "  Signature valid: $($setupExe.Name)" -ForegroundColor Green
+            & $signtool verify /pa /q $setupExe.FullName
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  WARNING: Installer signature does NOT verify: $($setupExe.Name)" -ForegroundColor Red
+            } else {
+                Write-Host "  Signature valid: $($setupExe.Name)" -ForegroundColor Green
+            }
         }
     }
 
@@ -308,4 +330,6 @@ Write-Host "  Build complete!" -ForegroundColor Cyan
 Write-Host "  Output: Bibim.Core\Output\" -ForegroundColor Gray
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
+try { Stop-Transcript | Out-Null } catch { }
+Write-Host "  Log: $__log" -ForegroundColor Gray
 pause
