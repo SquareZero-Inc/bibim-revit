@@ -12,6 +12,11 @@ namespace Bibim.Core
         /// context...]" message via <see cref="HistorySummariser"/>.</summary>
         public const int ChatHistoryMaxTurns = 10;
 
+        /// <summary>The window start advances in steps of this many messages so the
+        /// prompt prefix stays cache-stable (window size: ChatHistoryMaxTurns ..
+        /// ChatHistoryMaxTurns + step - 1). See <see cref="HistoryWindowPolicy"/>.</summary>
+        public const int ChatHistoryWindowStep = 6;
+
         /// <summary>Context window for the lightweight planner LLM instance.</summary>
         public const int PlannerContextWindow = 6;
 

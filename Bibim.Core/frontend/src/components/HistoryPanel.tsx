@@ -1,4 +1,5 @@
 import React, { useState, type CSSProperties } from 'react';
+import { isImeComposing } from '../utils/ime';
 import { formatDateShort, t } from '../i18n';
 import type { SessionInfo } from '../types';
 
@@ -232,7 +233,7 @@ function SessionItem({
               value={renameValue}
               onChange={(e) => setRenameValue(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') handleRenameSubmit(e);
+                if (e.key === 'Enter' && !isImeComposing(e)) handleRenameSubmit(e);
                 if (e.key === 'Escape') setRenaming(false);
               }}
               style={renameInputStyle}

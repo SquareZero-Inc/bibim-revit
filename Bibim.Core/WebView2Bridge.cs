@@ -112,6 +112,9 @@ namespace Bibim.Core
                         "\"(password|apiKey|api_key|anthropic_api_key|claude_api_key|openai_api_key|gemini_api_key|local_api_key)\"\\s*:\\s*\"[^\"]*\"",
                         "\"$1\":\"***\"",
                         System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                // Attached document bodies must not reach the log (session memory only).
+                if (logSafe != null && logSafe.IndexOf("\"attachment\"", StringComparison.Ordinal) >= 0)
+                    logSafe = $"(message with attachment, {logSafe.Length} chars — body not logged)";
                 Logger.Log("WebView2Bridge", $"Received: {logSafe?.Substring(0, Math.Min(logSafe?.Length ?? 0, 200))}");
 
                 var msg = JsonHelper.Deserialize<BridgeMessage>(raw);

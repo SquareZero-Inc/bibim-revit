@@ -18,15 +18,51 @@ namespace Bibim.Core
         /// Only set this when the task actually exports/writes files (PDF, DWG, DXF,
         /// CSV, IFC, Excel, image, etc.). For parameter edits, geometry moves, and
         /// other in-model changes these rules are dead weight.</param>
-        public static string Build(string revitVersion, bool isCodeGeneration, bool isFileOutput = false)
+        /// <param name="allowDirectReadAnswer">READ tasks: allow a plain-text answer built
+        /// from the typed read tools (count_elements / list_elements) instead of code.</param>
+        public static string Build(string revitVersion, bool isCodeGeneration, bool isFileOutput = false,
+            bool allowDirectReadAnswer = false)
         {
             string prompt = BuildBasePrompt(revitVersion);
 
             if (isCodeGeneration)
             {
+                // Capability boundaries — last line of defence when an impossible task
+                // slips past the planner (see CapabilityManifest for the shared list).
+                // Codegen-only: in plain chat mode the block's premise ("this code will
+                // be executed in-session") is false and it would wrongly forbid the
+                // model from showing educational example code.
+                prompt += CapabilityManifest.CodeGenBlock;
+
                 if (isFileOutput) prompt += BuildFileOutputRules();
                 prompt += BuildCodeGenerationRules();
+                if (allowDirectReadAnswer) prompt += BuildDirectReadAnswerRules();
             }
+            else
+            {
+                // Chat replies are NEVER executed. Field log 2026-07-13: a chat reply
+                // pasted a full export script, then told the user to press a Run
+                // button that does not exist in chat — three angry messages followed.
+                prompt += @"
+
+CHAT MODE — NO EXECUTION (CRITICAL):
+This reply is conversational; BIBIM does NOT run code pasted in chat, and there
+is NO run button on chat messages. If the request needs something DONE in Revit
+(export, create, modify, count, place...), do NOT paste a full runnable script
+and NEVER tell the user to press a run/execute button. Instead reply briefly
+that you'll handle it as a task and that they should send the request as a
+direct instruction (e.g. ""현재 뷰 벽 유형별 개수를 엑셀로 내보내줘"") so BIBIM
+can preview and execute it. Short illustrative snippets are fine ONLY when the
+user asks how an API works.
+Also: if the user reports a problem with BIBIM ITSELF (missing button, broken
+card/panel, weird behavior), do NOT speculate about causes or invent fixes
+(restarting Revit, reopening panels). Acknowledge it, say the BIBIM team will
+look into it, and offer to continue the work in another way right now.";
+            }
+
+            // Attached-document rules (spec §4-2) — always present, conditional in wording,
+            // so the cached prefix is identical with or without an attachment.
+            prompt += AttachedDocumentRules.CodeGen;
 
             // Replace Korean example strings embedded in the prompts for EN builds.
             // These are inside code-pattern examples, not UI text, so they can't use UiText().
@@ -68,7 +104,39 @@ namespace Bibim.Core
         /// Append tool use instructions when Claude Tool Use API is active.
         /// Tells Claude to use search_revit_api and run_roslyn_check proactively.
         /// </summary>
-        public static string AppendToolUseInstructions() => @"
+        public static string AppendToolUseInstructions(bool includeReadTools = false, bool includeCodeLibrary = false) =>
+            ToolUseInstructions
+            + (includeReadTools ? ReadToolInstructions : "")
+            + (includeCodeLibrary ? CodeLibraryToolInstructions : "");
+
+        private const string CodeLibraryToolInstructions = @"
+
+CODE LIBRARY:
+- search_code_library — the user's saved snippets from earlier tasks. If this task resembles
+  earlier work, call it ONCE first and adapt a close match; otherwise ignore it. A saved
+  snippet is not proof of correctness — verify with run_roslyn_check as usual.";
+
+        private const string ReadToolInstructions = @"
+
+READ TOOLS (this is a READ task):
+8. count_elements — exact count of one category (whole model / active view / selection,
+   optionally one level) with a per-type breakdown.
+9. list_elements — up to 100 elements with Id, type, level and up to 5 parameters in
+   project units. It says explicitly when the list is truncated.";
+
+        private static string BuildDirectReadAnswerRules() => @"
+
+READ-ONLY DIRECT ANSWER (overrides ""Return ONLY the code block"" for THIS task):
+This task only reads the model. If count_elements / list_elements (and the other read
+tools) answer the question COMPLETELY and EXACTLY — an element count, a short list, a
+few parameter values — call them and reply in plain text in the user's language with the
+exact numbers the tools returned. Do not write code in that case.
+Write code instead (a ```csharp``` block, then run_roslyn_check, as usual) when the answer
+needs computation over many elements (sums, areas, lengths, geometry, cross-category
+joins), more rows than the tools return, a file export, or anything the tools cannot
+express. Never estimate or extrapolate from a truncated list.";
+
+        private const string ToolUseInstructions = @"
 
 TOOL USE INSTRUCTIONS:
 You have access to the following tools. Use them proactively:
@@ -117,6 +185,20 @@ WORKFLOW:
 IMPORTANT: If the documentation above conflicts with your training data, ALWAYS prefer the documentation above.";
         }
 
+        /// <summary>
+        /// ElementId width by version (checked against RevitAPI.dll 2024/2026): IntegerValue is
+        /// obsolete in 2024 and gone in 2026, and was still the most common generated compile
+        /// failure / "version warning". WorksetId keeps IntegerValue in every version.
+        /// </summary>
+        internal static string ElementIdRule(string revitVersion)
+        {
+            string v = revitVersion ?? "";
+            int.TryParse(v.Contains(".") ? v.Substring(0, v.IndexOf('.')) : v, out int year);
+            return year > 0 && year < 2024
+                ? "ElementId (Revit 2022-2023): use id.IntegerValue and new ElementId(int)."
+                : "ElementId is 64-bit (Revit 2024+): use id.Value (long) and new ElementId((long)x). Never use ElementId.IntegerValue — deprecated in 2024, removed in 2026. (WorksetId still uses .IntegerValue.)";
+        }
+
         private static string BuildBasePrompt(string revitVersion) => $@"You are BIBIM AI, an expert Revit C# code generator.
 You generate C# code that runs inside Autodesk Revit via the Revit API.
 
@@ -126,6 +208,8 @@ TARGET ENVIRONMENT:
 - Entry point signature: public static object Execute(UIApplication uiApp, Bibim.Core.BibimExecutionContext ctx)
 - Available variables: uiApp, app (Application), doc (Document), uidoc (UIDocument), ctx (BibimExecutionContext)
 - Use ctx.Log(""message"") to record intermediate progress, element counts, decisions, or skipped items. These appear in the BIBIM panel after execution.
+- Imported namespaces: System, System.Linq, System.Collections.Generic, System.IO, System.Text, Autodesk.Revit.DB (+ .Architecture, .Structure), Autodesk.Revit.UI. Anything else must be fully qualified.
+- {ElementIdRule(revitVersion)}
 
 CODE RULES:
 1. Always use Transactions for DB modifications: using (var tx = new Transaction(doc, ""name"")) {{ tx.Start(); ... tx.Commit(); }}

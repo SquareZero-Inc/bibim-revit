@@ -21,13 +21,16 @@ namespace Bibim.Core
         public static int SessionCallCount => _sessionCallCount;
 
         /// <summary>
-        /// Cache hit ratio = cache_read / (input + cache_read). Returns 0 if no input recorded.
+        /// Cache hit ratio = cache_read / processed input. _sessionInputTokens is the
+        /// PROCESSED total (fresh + cache_read + cache_creation) so it matches the
+        /// per-message values stored via AddMessage and restored on session load.
+        /// Returns 0 if no input recorded.
         /// </summary>
         public static double SessionCacheHitRatio
         {
             get
             {
-                int total = _sessionInputTokens + _sessionCachedInputTokens;
+                int total = _sessionInputTokens;
                 return total == 0 ? 0.0 : (double)_sessionCachedInputTokens / total;
             }
         }
@@ -39,7 +42,12 @@ namespace Bibim.Core
             int inputTokens, int outputTokens, string requestId = null,
             int cachedInputTokens = 0, int cacheCreationInputTokens = 0)
         {
-            Interlocked.Add(ref _sessionInputTokens, inputTokens);
+            // Accumulate PROCESSED input (fresh + cache line items) so the live
+            // session total matches what messages store/display and what
+            // RestoreSessionUsage replays after a session load. inputTokens is the
+            // canonical fresh-only figure (providers normalize to it).
+            Interlocked.Add(ref _sessionInputTokens,
+                inputTokens + cachedInputTokens + cacheCreationInputTokens);
             Interlocked.Add(ref _sessionOutputTokens, outputTokens);
             Interlocked.Add(ref _sessionCachedInputTokens, cachedInputTokens);
             Interlocked.Add(ref _sessionCacheCreationInputTokens, cacheCreationInputTokens);

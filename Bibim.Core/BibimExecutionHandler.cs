@@ -25,7 +25,12 @@ namespace Bibim.Core
         private readonly ConcurrentQueue<ExecutionRequest> _queue = new ConcurrentQueue<ExecutionRequest>();
 
         // Track modified elements during transaction via DocumentChanged event
+        // (union + per-kind buckets for verification and the audit log).
         private HashSet<ElementId> _modifiedElementIds;
+        private HashSet<ElementId> _addedIds;
+        private HashSet<ElementId> _changedIds;
+        private HashSet<ElementId> _deletedIds;
+        private const int MaxReportedElementIds = 500;
 
         // Collect Revit warnings fired during FailuresProcessing event
         private List<string> _collectedWarnings;
@@ -169,10 +174,17 @@ namespace Bibim.Core
             ExecutionRequest request, ExecutionResult result)
         {
             IsDryRun = true;
-            _modifiedElementIds = new HashSet<ElementId>();
+            ResetChangeTracking();
             _collectedWarnings = new List<string>();
             doc.Application.DocumentChanged += OnDocumentChanged;
             doc.Application.FailuresProcessing += OnFailuresProcessing;
+
+            // Snapshot the user's selection BEFORE the generated code runs. Generated
+            // code often ends by selecting its result elements; the group rollback then
+            // deletes those elements and Revit clears the selection — so without this
+            // snapshot, selection-based commits fail with "no elements selected".
+            var preRunSelection = CaptureSelection(app);
+            result.SelectionBeforeRun = preRunSelection;
 
             try
             {
@@ -184,7 +196,7 @@ namespace Bibim.Core
                         var ctx = new BibimExecutionContext();
                         var output = InvokeGeneratedCode(request, app, ctx);
 
-                        result.AffectedElementCount = _modifiedElementIds.Count;
+                        CopyChangeTracking(result);
                         result.Success = true;
                         result.Output = ExecutionResultFormatter.BuildDryRunOutput(
                             output,
@@ -215,6 +227,11 @@ namespace Bibim.Core
                 IsDryRun = false;
             }
 
+            // If the rollback wiped the user's selection, restore it so (a) the user
+            // doesn't have to reselect before commit and (b) a self-correction re-run
+            // of the dry-run still sees the original element set.
+            RestoreSelectionIfEmpty(app, doc, preRunSelection, "post-dryrun");
+
             if (_collectedWarnings.Count > 0)
                 result.RevitWarnings = new List<string>(_collectedWarnings);
 
@@ -231,7 +248,14 @@ namespace Bibim.Core
             ExecutionRequest request, ExecutionResult result)
         {
             IsDryRun = false;
-            _modifiedElementIds = new HashSet<ElementId>();
+
+            // Defensive restore: if preview (or anything since) emptied the selection,
+            // put back the ids captured at preview start so selection-based generated
+            // code targets the same set the user previewed. A deliberate new selection
+            // (non-empty) is always respected.
+            RestoreSelectionIfEmpty(app, doc, request.SelectionSnapshot, "pre-commit");
+
+            ResetChangeTracking();
             _collectedWarnings = new List<string>();
             doc.Application.DocumentChanged += OnDocumentChanged;
             doc.Application.FailuresProcessing += OnFailuresProcessing;
@@ -244,7 +268,7 @@ namespace Bibim.Core
                     var ctx = new BibimExecutionContext();
                     var output = InvokeGeneratedCode(request, app, ctx);
                     result.Success = true;
-                    result.AffectedElementCount = _modifiedElementIds.Count;
+                    CopyChangeTracking(result);
                     result.Output = output?.ToString() ?? "Execution completed.";
                     txGroup.Assimilate();
 
@@ -281,6 +305,79 @@ namespace Bibim.Core
                 result.RevitWarnings = new List<string>(_collectedWarnings);
         }
 
+        private void ResetChangeTracking()
+        {
+            _modifiedElementIds = new HashSet<ElementId>();
+            _addedIds = new HashSet<ElementId>();
+            _changedIds = new HashSet<ElementId>();
+            _deletedIds = new HashSet<ElementId>();
+        }
+
+        private void CopyChangeTracking(ExecutionResult result)
+        {
+            result.AffectedElementCount = _modifiedElementIds?.Count ?? 0;
+            result.AddedCount = _addedIds?.Count ?? 0;
+            result.ModifiedCount = _changedIds?.Count ?? 0;
+            result.DeletedCount = _deletedIds?.Count ?? 0;
+            result.AffectedElementIds = _modifiedElementIds == null
+                ? new List<long>()
+                : _modifiedElementIds.Take(MaxReportedElementIds).Select(ToLong).ToList();
+        }
+
+        /// <summary>ElementId → integer across API generations (IntegerValue was
+        /// replaced by the 64-bit Value in Revit 2024).</summary>
+        private static long ToLong(ElementId id)
+        {
+#if REVIT_2022 || REVIT_2023
+            return id.IntegerValue;
+#else
+            return id.Value;
+#endif
+        }
+
+        /// <summary>Snapshot of the current selection (empty list when nothing selected).</summary>
+        private static List<ElementId> CaptureSelection(UIApplication app)
+        {
+            try
+            {
+                var ids = app.ActiveUIDocument?.Selection?.GetElementIds();
+                return ids != null ? ids.ToList() : new List<ElementId>();
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("BibimExecutionHandler", $"[Selection] capture failed: {ex.Message}");
+                return new List<ElementId>();
+            }
+        }
+
+        /// <summary>
+        /// Restore <paramref name="snapshot"/> as the selection — only when the live
+        /// selection is currently empty (never stomps a deliberate user selection) and
+        /// only ids that still resolve to live elements.
+        /// </summary>
+        private static void RestoreSelectionIfEmpty(UIApplication app, Document doc,
+            IList<ElementId> snapshot, string stage)
+        {
+            if (snapshot == null || snapshot.Count == 0) return;
+            try
+            {
+                var uidoc = app.ActiveUIDocument;
+                if (uidoc == null || uidoc.Document != doc) return;
+                if (uidoc.Selection.GetElementIds().Count > 0) return;
+
+                var alive = snapshot.Where(id => doc.GetElement(id) != null).ToList();
+                if (alive.Count == 0) return;
+
+                uidoc.Selection.SetElementIds(alive);
+                Logger.Log("BibimExecutionHandler",
+                    $"[Selection] restored {alive.Count}/{snapshot.Count} ids ({stage})");
+            }
+            catch (Exception ex)
+            {
+                Logger.Log("BibimExecutionHandler", $"[Selection] restore failed ({stage}): {ex.Message}");
+            }
+        }
+
         /// <summary>
         /// DocumentChanged event handler — captures all element IDs modified during the transaction.
         /// </summary>
@@ -289,11 +386,20 @@ namespace Bibim.Core
             try
             {
                 foreach (var id in e.GetAddedElementIds())
+                {
                     _modifiedElementIds?.Add(id);
+                    _addedIds?.Add(id);
+                }
                 foreach (var id in e.GetModifiedElementIds())
+                {
                     _modifiedElementIds?.Add(id);
+                    _changedIds?.Add(id);
+                }
                 foreach (var id in e.GetDeletedElementIds())
+                {
                     _modifiedElementIds?.Add(id);
+                    _deletedIds?.Add(id);
+                }
             }
             catch (Exception ex)
             {

@@ -1,13 +1,16 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import { isImeComposing } from '../utils/ime';
 import { t } from '../i18n';
 import type { QuestionItem } from '../types';
 
 interface Props {
+  /** Hide the card and answer via free chat instead. */
+  onDismiss?: () => void;
   questions: QuestionItem[];
   onComplete: (answers: { id: string; answer: string; skipped: boolean }[]) => void;
 }
 
-export default function QuestionCard({ questions, onComplete }: Props) {
+export default function QuestionCard({ onDismiss, questions, onComplete }: Props) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answers, setAnswers] = useState<Record<string, { answer: string; skipped: boolean }>>({});
   const [customText, setCustomText] = useState('');
@@ -208,7 +211,7 @@ export default function QuestionCard({ questions, onComplete }: Props) {
               type="text"
               value={customText}
               onChange={e => setCustomText(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleCustomSubmit(); }}
+              onKeyDown={e => { if (e.key === 'Enter' && !isImeComposing(e)) handleCustomSubmit(); }}
               placeholder={t('questionCardSomethingElse')}
               autoFocus
               style={{
@@ -246,6 +249,22 @@ export default function QuestionCard({ questions, onComplete }: Props) {
             }}
           >
             ✏️ {t('questionCardSomethingElse')}
+          </button>
+        )}
+        {onDismiss && (
+          <button
+            onClick={onDismiss}
+            style={{
+              padding: 'var(--space-sm) var(--space-md)',
+              background: 'none',
+              border: '1px solid var(--color-border)',
+              borderRadius: 'var(--radius-md)',
+              cursor: 'pointer',
+              color: 'var(--color-text-muted)',
+              fontSize: 'var(--text-sm)',
+            }}
+          >
+            💬 {t('questionCardAnswerInChat')}
           </button>
         )}
         <button

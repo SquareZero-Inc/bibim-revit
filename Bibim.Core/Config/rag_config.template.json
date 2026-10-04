@@ -1,7 +1,7 @@
 {
-  "claude_model": "claude-sonnet-4-6",
+  "claude_model": "claude-sonnet-5",
   "api_keys": {
-    "claude_api_key": "YOUR_ANTHROPIC_API_KEY_HERE"
+    "anthropic_api_key": "YOUR_ANTHROPIC_API_KEY_HERE"
   },
   "validation": {
     "gate_enabled": true,
@@ -11,5 +11,5 @@
     "enable_api_xml_hints": true,
     "rollout_phase": "phase3"
   },
-  "_comment": "Copy this file to rag_config.json and fill in your Anthropic API key. Get one at https://console.anthropic.com/"
+  "_comment": "Copy this file to %APPDATA%\\BIBIM\\rag_config.json and fill in your key (Anthropic: https://console.anthropic.com/ , OpenAI: https://platform.openai.com/api-keys). It is encrypted with Windows DPAPI on the next launch."
 }

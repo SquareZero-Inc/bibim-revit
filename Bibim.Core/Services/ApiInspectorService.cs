@@ -28,9 +28,9 @@ namespace Bibim.Core
             new Dictionary<string, VersionSpecificInfo>(StringComparer.OrdinalIgnoreCase)
         {
             { "GetGeometryObjectFromReference", new VersionSpecificInfo { Note = "Behavior changed in Revit 2024+", AffectsFrom = 2024 } },
-            { "IntegerValue", new VersionSpecificInfo { Note = "Removed in Revit 2024+, use Value", AffectsFrom = 2024 } },
-            { "LevelId", new VersionSpecificInfo { Note = "Removed in Revit 2024+, use get_Parameter", AffectsFrom = 2024 } },
-            { "AsInteger", new VersionSpecificInfo { Note = "Changed in Revit 2024+", AffectsFrom = 2024 } },
+            // Name-matched. LevelId / AsInteger were removed from this table: both exist unchanged
+            // in the 2024 and 2026 APIs, so they only produced false "version warnings".
+            { "IntegerValue", new VersionSpecificInfo { Note = "ElementId.IntegerValue: deprecated in Revit 2024, removed in 2026 — use Value (WorksetId.IntegerValue is unaffected)", AffectsFrom = 2024 } },
             { "NewFloor", new VersionSpecificInfo { Note = "Signature changed in Revit 2022+", AffectsFrom = 2022 } },
             { "NewRoof", new VersionSpecificInfo { Note = "Signature changed in Revit 2022+", AffectsFrom = 2022 } }
         };

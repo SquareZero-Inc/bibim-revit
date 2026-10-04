@@ -133,14 +133,17 @@ namespace Bibim.Core
 
         // ────────────────────────────── public API ──────────────────────────────
 
-        public async Task<JObject> SendNonStreamingAsync(
+        public async Task<JObject> CreateMessageAsync(
             JArray messages,
             string systemPrompt,
             JArray tools,
             CancellationToken ct,
             int maxTokens,
-            bool jsonMode = false)
+            LlmRequestOptions options = null)
         {
+            // Self-hosted servers have no schema mode or effort control; a schema
+            // request degrades to plain JSON mode (the planner re-validates anyway).
+            bool jsonMode = options != null && (options.JsonMode || options.ResponseSchema != null);
             var chatMessages = TranslateMessagesToChatCompletions(messages, systemPrompt);
             string modelToSend = await ResolveServerModelNameAsync(ct);
 
@@ -187,7 +190,8 @@ namespace Bibim.Core
             string systemPrompt,
             Action<string> onTextDelta,
             CancellationToken ct,
-            int maxTokens)
+            int maxTokens,
+            LlmRequestOptions options = null)
         {
             var chatMessages = TranslateMessagesToChatCompletions(messages, systemPrompt);
             string modelToSend = await ResolveServerModelNameAsync(ct);
@@ -513,12 +517,17 @@ namespace Bibim.Core
                 else stopReason = "end_turn";
             }
 
+            // Canonical (Anthropic-shaped) semantics: input_tokens EXCLUDES cache
+            // reads. OpenAI-compatible local servers' reports an INCLUSIVE prompt count, so subtract the cached
+            // share — otherwise ProcessedInputTokens (fresh+cached) double-counts it.
             var usageIn = raw["usage"] ?? new JObject();
+            int locInput = usageIn["prompt_tokens"]?.Value<int>() ?? 0;
+            int locCached = usageIn["prompt_tokens_details"]?["cached_tokens"]?.Value<int>() ?? 0;
             var usage = new JObject
             {
-                ["input_tokens"] = usageIn["prompt_tokens"] ?? 0,
+                ["input_tokens"] = Math.Max(0, locInput - locCached),
                 ["output_tokens"] = usageIn["completion_tokens"] ?? 0,
-                ["cache_read_input_tokens"] = usageIn["prompt_tokens_details"]?["cached_tokens"] ?? 0
+                ["cache_read_input_tokens"] = locCached
             };
 
             return new JObject

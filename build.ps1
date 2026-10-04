@@ -55,29 +55,6 @@ if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdenti
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSCommandPath -Parent
-$buildStamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$gitHash = Get-GitShortHash -RepoRoot $root
-$buildId = if ($gitHash) { "${buildStamp}_${gitHash}" } else { $buildStamp }
-
-[xml]$csproj = Get-Content "$root\Bibim.Core\Bibim.Core.csproj"
-$appVersion = $csproj.Project.PropertyGroup | Where-Object { $_.Version } | Select-Object -First 1 -ExpandProperty Version
-if ([string]::IsNullOrWhiteSpace($appVersion)) {
-    $appVersion = "0.0.0"
-}
-$informationalVersion = "$appVersion+$buildId"
-
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  BIBIM AI - Build Pipeline" -ForegroundColor Cyan
-Write-Host "  Config: $RevitConfig  Lang: $Lang" -ForegroundColor Gray
-Write-Host "  Version: $appVersion  BuildId: $buildId" -ForegroundColor Gray
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-
-if ($RevitSdkPath) {
-    $env:REVIT_SDK_PATH = $RevitSdkPath
-    Write-Host "[INFO] REVIT_SDK_PATH = $RevitSdkPath" -ForegroundColor Gray
-}
 
 # -- Step 0: Reset stale build artifacts (keep Output installers) --
 Write-Host "[0/5] Resetting stale build artifacts..." -ForegroundColor Yellow
@@ -206,6 +183,59 @@ if (-not $SkipTests) {
     Write-Host ""
 }
 
+# -- Step 3.5: Sign the DLLs BEFORE packaging, so the installer ships signed DLLs --
+# (Signing after ISCC left the DLLs inside the installer unsigned -> Revit's
+# "unsigned add-in" prompt on first launch.)
+$signtool = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
+
+if (-not (Test-Path $signtool)) {
+    $sdkBase = "C:\Program Files (x86)\Windows Kits\10\bin"
+    if (Test-Path $sdkBase) {
+        $sdkVer = Get-ChildItem $sdkBase -Directory | Sort-Object Name -Descending | Select-Object -First 1
+        if ($sdkVer) {
+            $altPath = Join-Path $sdkVer.FullName "x64\signtool.exe"
+            if (Test-Path $altPath) { $signtool = $altPath }
+        }
+    }
+}
+# Pick the certificate EXPLICITLY. "/a" (auto-select) chooses the cert that expires last,
+# and since 2026-08 that is a self-signed "trust_<guid>" cert in the user store, not the
+# DigiCert EV cert -> files were "signed" but Revit/Windows reported an invalid signature.
+$signArgs = @("sign", "/n", "SquareZero Inc.", "/i", "DigiCert", "/tr", "http://timestamp.digicert.com", "/td", "sha256", "/fd", "sha256")
+if (Test-Path $signtool) {
+    Write-Host "[3.5/5] Signing DLLs..." -ForegroundColor Yellow
+    # Sign the main DLLs (both KO and EN)
+    $dllsToSign = @(
+        "$root\Bibim.Core\bin\Release\2027\Bibim.Core.dll",
+        "$root\Bibim.Core\bin\Release\2026\Bibim.Core.dll",
+        "$root\Bibim.Core\bin\Release\2025\Bibim.Core.dll",
+        "$root\Bibim.Core\bin\Release\2024\Bibim.Core.dll",
+        "$root\Bibim.Core\bin\Release\2023\Bibim.Core.dll",
+        "$root\Bibim.Core\bin\Release\2022\Bibim.Core.dll",
+        "$root\Bibim.Core\bin\Release_EN\2027\Bibim.Core.dll",
+        "$root\Bibim.Core\bin\Release_EN\2026\Bibim.Core.dll",
+        "$root\Bibim.Core\bin\Release_EN\2025\Bibim.Core.dll",
+        "$root\Bibim.Core\bin\Release_EN\2024\Bibim.Core.dll",
+        "$root\Bibim.Core\bin\Release_EN\2023\Bibim.Core.dll",
+        "$root\Bibim.Core\bin\Release_EN\2022\Bibim.Core.dll"
+    )
+    foreach ($dll in $dllsToSign) {
+        if (Test-Path $dll) {
+            $tfName = Split-Path (Split-Path $dll) -Leaf
+            Write-Host "  Signing: Bibim.Core.dll ($tfName)" -ForegroundColor Gray
+            & $signtool @signArgs $dll
+            if ($LASTEXITCODE -ne 0) {
+                Write-Host "  WARNING: DLL signing failed for $tfName" -ForegroundColor DarkYellow
+            } elseif ((Get-AuthenticodeSignature $dll).Status -ne "Valid") {
+                throw "Signature on Bibim.Core.dll ($tfName) is not valid: $((Get-AuthenticodeSignature $dll).StatusMessage)"
+            }
+        }
+    }
+} else {
+    Write-Host "[3.5/5] signtool.exe not found - DLL signing skipped" -ForegroundColor DarkYellow
+}
+Write-Host ""
+
 # -- Step 4: Installer (Inno Setup) --
 if (-not $SkipInstaller) {
     Write-Host "[4/5] Building installer..." -ForegroundColor Yellow
@@ -252,55 +282,21 @@ if (-not $SkipInstaller) {
 # -- Step 5: Code Signing (DigiCert EV Certificate) --
 Write-Host "[5/5] Code Signing..." -ForegroundColor Yellow
 
-$signtool = "C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64\signtool.exe"
-
-if (-not (Test-Path $signtool)) {
-    $sdkBase = "C:\Program Files (x86)\Windows Kits\10\bin"
-    if (Test-Path $sdkBase) {
-        $sdkVer = Get-ChildItem $sdkBase -Directory | Sort-Object Name -Descending | Select-Object -First 1
-        if ($sdkVer) {
-            $altPath = Join-Path $sdkVer.FullName "x64\signtool.exe"
-            if (Test-Path $altPath) { $signtool = $altPath }
-        }
-    }
-}
-
 if (Test-Path $signtool) {
-    $signArgs = @("sign", "/a", "/tr", "http://timestamp.digicert.com", "/td", "sha256", "/fd", "sha256")
-
     # Sign the installer EXEs
-    $setupExes = Get-ChildItem "$root\Bibim.Core\Output\*.exe" -ErrorAction SilentlyContinue
+    $setupExes = Get-ChildItem "$root\Bibim.Core\Output\*$buildId*.exe" -ErrorAction SilentlyContinue
     foreach ($setupExe in $setupExes) {
         Write-Host "  Signing: $($setupExe.Name)" -ForegroundColor Gray
         & $signtool @signArgs /v $setupExe.FullName
         if ($LASTEXITCODE -ne 0) {
             Write-Host "  WARNING: Installer signing failed (USB token connected?)" -ForegroundColor Red
+        } elseif ((Get-AuthenticodeSignature $setupExe.FullName).Status -ne "Valid") {
+            Write-Host "  WARNING: Installer signature is NOT valid: $($setupExe.Name)" -ForegroundColor Red
+        } else {
+            Write-Host "  Signature valid: $($setupExe.Name)" -ForegroundColor Green
         }
     }
 
-    # Sign the main DLLs (both KO and EN)
-    $dllsToSign = @(
-        "$root\Bibim.Core\bin\Release\2026\Bibim.Core.dll",
-        "$root\Bibim.Core\bin\Release\2025\Bibim.Core.dll",
-        "$root\Bibim.Core\bin\Release\2024\Bibim.Core.dll",
-        "$root\Bibim.Core\bin\Release\2023\Bibim.Core.dll",
-        "$root\Bibim.Core\bin\Release\2022\Bibim.Core.dll",
-        "$root\Bibim.Core\bin\Release_EN\2026\Bibim.Core.dll",
-        "$root\Bibim.Core\bin\Release_EN\2025\Bibim.Core.dll",
-        "$root\Bibim.Core\bin\Release_EN\2024\Bibim.Core.dll",
-        "$root\Bibim.Core\bin\Release_EN\2023\Bibim.Core.dll",
-        "$root\Bibim.Core\bin\Release_EN\2022\Bibim.Core.dll"
-    )
-    foreach ($dll in $dllsToSign) {
-        if (Test-Path $dll) {
-            $tfName = Split-Path (Split-Path $dll) -Leaf
-            Write-Host "  Signing: Bibim.Core.dll ($tfName)" -ForegroundColor Gray
-            & $signtool @signArgs $dll
-            if ($LASTEXITCODE -ne 0) {
-                Write-Host "  WARNING: DLL signing failed for $tfName" -ForegroundColor DarkYellow
-            }
-        }
-    }
     Write-Host "[5/5] Code signing done" -ForegroundColor Green
 } else {
     Write-Host "[5/5] signtool.exe not found - code signing skipped" -ForegroundColor DarkYellow

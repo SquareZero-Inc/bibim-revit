@@ -1,7 +1,11 @@
-import { useState, type CSSProperties } from 'react';
+import React, { useState, type CSSProperties } from 'react';
+import { isImeComposing } from '../utils/ime';
 import { formatTime, t } from '../i18n';
 import type { ChatMsg } from '../types';
 import CodeBlock from './CodeBlock';
+import { renderMarkdown } from '../utils/markdown';
+import { parseAttachmentMarker } from '../utils/attachment';
+import AttachmentChip from './AttachmentChip';
 
 interface Props {
   msg: ChatMsg;
@@ -13,7 +17,14 @@ interface Props {
   onWarningResponse?: (choice: 'yes' | 'no' | 'add', taskId: string | undefined, text?: string) => void;
 }
 
-export default function ChatMessage({ msg, onUndo, onFeedback, onFeedbackDetail, onRegenerate, onRerun, onWarningResponse }: Props) {
+function ChatMessage({ msg, onUndo, onFeedback, onFeedbackDetail, onRegenerate, onRerun, onWarningResponse }: Props) {
+  const [msgCopied, setMsgCopied] = useState(false);
+  const handleCopyMessage = () => {
+    navigator.clipboard.writeText(msg.text ?? '').then(() => {
+      setMsgCopied(true);
+      setTimeout(() => setMsgCopied(false), 2000);
+    });
+  };
   if (msg.type === 'feedback_request') {
     return (
       <FeedbackBubble
@@ -29,6 +40,11 @@ export default function ChatMessage({ msg, onUndo, onFeedback, onFeedbackDetail,
     return <RevitWarningBubble msg={msg} onResponse={onWarningResponse} />;
   }
   const isStreaming = msg.id === '__streaming__';
+  // Live messages carry `attachment`; reloaded sessions only have the stored
+  // "📎 name" + newline + instruction marker text.
+  const marker = msg.isUser && !msg.attachment ? parseAttachmentMarker(msg.text) : null;
+  const attachment = msg.attachment ?? marker?.attachment;
+  const bodyText = marker ? marker.text : msg.text;
   const isQuestion = msg.type === 'question';
   const isError = msg.type === 'error';
   const showActions = !msg.isUser && !isStreaming && Boolean(msg.actionId) &&
@@ -66,6 +82,11 @@ export default function ChatMessage({ msg, onUndo, onFeedback, onFeedbackDetail,
         fontSize: 'var(--text-sm)',
         lineHeight: 'var(--leading-relaxed)',
       }}>
+        {attachment && (
+          <div style={{ marginBottom: bodyText ? 'var(--space-xs)' : 0 }}>
+            <AttachmentChip attachment={attachment} expandable />
+          </div>
+        )}
         <div style={{
           color: msg.type === 'system'
             ? 'var(--color-text-muted)'
@@ -73,7 +94,7 @@ export default function ChatMessage({ msg, onUndo, onFeedback, onFeedbackDetail,
           whiteSpace: 'pre-wrap',
           wordBreak: 'break-word',
         }}>
-          {renderText(msg.text)}
+          {renderText(bodyText, msg.isUser)}
           {isStreaming && <span style={{ opacity: 0.5 }}>...</span>}
         </div>
 
@@ -171,6 +192,19 @@ export default function ChatMessage({ msg, onUndo, onFeedback, onFeedbackDetail,
             textAlign: msg.isUser ? 'right' : 'left',
           }}>
             {formatTime(msg.createdAt)}
+          {!msg.isUser && !!msg.text && (
+            <button
+              onClick={handleCopyMessage}
+              title={t('copyMessage')}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+                color: msgCopied ? 'var(--color-success)' : 'var(--color-text-muted)',
+                fontSize: 'var(--text-xs)', marginLeft: 6,
+              }}
+            >
+              {msgCopied ? '✓' : '⧉'}
+            </button>
+          )}
           </div>
         )}
       </div>
@@ -178,8 +212,11 @@ export default function ChatMessage({ msg, onUndo, onFeedback, onFeedbackDetail,
   );
 }
 
-function renderText(text: string) {
+function renderText(text: string, isUser?: boolean) {
   if (!text) return null;
+
+  // User bubbles are fully literal — no markdown, no code-block chrome.
+  if (isUser) return <span>{text}</span>;
 
   const parts = text.split(/(```[\s\S]*?```)/g);
   return parts.map((part, index) => {
@@ -188,6 +225,11 @@ function renderText(text: string) {
       const language = lines[0].replace('```', '').trim() || 'csharp';
       const code = lines.slice(1, -1).join('\n');
       return <CodeBlock key={index} code={code} language={language} />;
+    }
+    // Assistant text is markdown (bold/lists/headings/tables used to render as
+    // raw ** and - characters); user text stays literal.
+    if (!isUser) {
+      return <div key={index}>{renderMarkdown(part, `md${index}`)}</div>;
     }
     return <span key={index}>{part}</span>;
   });
@@ -252,13 +294,13 @@ function FeedbackBubble({ msg, onFeedback, onFeedbackDetail, onRegenerate }: Fee
                 onClick={() => onFeedback?.(msg.actionId!, 'up', msg.taskId)}
                 style={{ ...secondaryButtonStyle, color: 'var(--color-success)', borderColor: 'var(--color-success)' }}
               >
-                👍 Up
+                👍 {t('helpful')}
               </button>
               <button
                 onClick={() => onFeedback?.(msg.actionId!, 'down', msg.taskId)}
                 style={{ ...secondaryButtonStyle, color: 'var(--color-error)', borderColor: 'var(--color-error)' }}
               >
-                👎 Down
+                👎 {t('notHelpful')}
               </button>
             </div>
           </>
@@ -303,7 +345,7 @@ function FeedbackBubble({ msg, onFeedback, onFeedbackDetail, onRegenerate }: Fee
                 value={otherText}
                 onChange={(e) => setOtherText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && otherText.trim()) {
+                  if (e.key === 'Enter' && !isImeComposing(e) && otherText.trim()) {
                     onFeedbackDetail?.(msg.actionId!, msg.taskId, otherText.trim());
                   }
                 }}
@@ -460,3 +502,8 @@ function RevitWarningBubble({ msg, onResponse }: RevitWarningBubbleProps) {
     </div>
   );
 }
+
+// Memoized: streaming re-renders the whole list per delta; non-streaming
+// bubbles keep reference identity, so memo skips their (now expensive)
+// markdown/highlight re-parse entirely.
+export default React.memo(ChatMessage);

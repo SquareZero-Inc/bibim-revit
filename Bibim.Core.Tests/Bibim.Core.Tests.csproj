@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net8.0-windows</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>disable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
@@ -14,11 +14,8 @@
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />
-    <PackageReference Include="Anthropic" Version="12.9.0" />
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
-    <PackageReference Include="System.Text.Json" Version="10.0.2" />
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="9.0.0" />
-    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="9.0.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
   </ItemGroup>
 
   <!--
@@ -36,6 +33,22 @@
     <Compile Include="..\Bibim.Core\Models\TaskFlowModels.cs" Link="Linked\TaskFlowModels.cs" />
     <Compile Include="..\Bibim.Core\Common\Logger.cs" Link="Linked\Logger.cs" />
     <Compile Include="..\Bibim.Core\Models\ExecutionModels.cs" Link="Linked\ExecutionModels.cs" />
+    <!-- v1.2.0 pure (Revit-free) logic -->
+    <Compile Include="..\Bibim.Core\Services\AppLanguage.cs" Link="Linked\AppLanguage.cs" />
+    <Compile Include="..\Bibim.Core\Services\Providers\ModelCatalog.cs" Link="Linked\ModelCatalog.cs" />
+    <Compile Include="..\Bibim.Core\Services\Providers\ILlmProvider.cs" Link="Linked\ILlmProvider.cs" />
+    <Compile Include="..\Bibim.Core\Services\Providers\AnthropicProvider.cs" Link="Linked\AnthropicProvider.cs" />
+    <Compile Include="..\Bibim.Core\Services\Providers\OpenAIProvider.cs" Link="Linked\OpenAIProvider.cs" />
+    <Compile Include="..\Bibim.Core\Services\ProgressNarrator.cs" Link="Linked\ProgressNarrator.cs" />
+    <Compile Include="..\Bibim.Core\Services\CommitVerifier.cs" Link="Linked\CommitVerifier.cs" />
+    <Compile Include="..\Bibim.Core\Services\AuditLogService.cs" Link="Linked\AuditLogService.cs" />
+    <Compile Include="..\Bibim.Core\Services\HistoryWindowPolicy.cs" Link="Linked\HistoryWindowPolicy.cs" />
+    <Compile Include="..\Bibim.Core\Services\Prompts\PlannerSchema.cs" Link="Linked\PlannerSchema.cs" />
+    <Compile Include="..\Bibim.Core\Common\SecretProtector.cs" Link="Linked\SecretProtector.cs" />
+    <Compile Include="..\Bibim.Core\Common\LlmErrorPresenter.cs" Link="Linked\LlmErrorPresenter.cs" />
+    <Compile Include="..\Bibim.Core\Models\CodeLibraryModels.cs" Link="Linked\CodeLibraryModels.cs" />
+    <Compile Include="..\Bibim.Core\Services\CodeLibrarySearch.cs" Link="Linked\CodeLibrarySearch.cs" />
+    <Compile Include="..\Bibim.Core\Services\AttachedDocument.cs" Link="Linked\AttachedDocument.cs" />
   </ItemGroup>
 
 </Project>

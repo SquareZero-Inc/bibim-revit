@@ -25,25 +25,37 @@ namespace Bibim.Core.Tests
         }
 
         [Fact]
-        public void Fix_AsInteger_To_AsValueString()
+        public void AsInteger_And_LevelId_AreLeftAlone()
         {
-            string code = "var x = param.AsInteger();";
+            // Both exist unchanged in the Revit 2024 and 2026 APIs (checked against RevitAPI.dll);
+            // rewriting them produced AsValueString() where an int was needed and
+            // WALL_BASE_CONSTRAINT lookups on doors.
+            string code = "var x = param.AsInteger();\nvar levelId = door.LevelId;";
             var result = _analyzer.ApplyAutoFixes(code);
 
-            Assert.True(result.HasChanges);
-            Assert.Contains(".AsValueString()", result.FixedCode);
-            Assert.DoesNotContain(".AsInteger()", result.FixedCode);
+            Assert.False(result.HasChanges);
+            Assert.Equal(code, result.FixedCode);
         }
 
         [Fact]
-        public void Fix_LevelId_To_GetParameter()
+        public void AsInteger_And_LevelId_AreNotReportedAsDeprecated()
         {
-            string code = "var levelId = wall.LevelId;";
-            var result = _analyzer.ApplyAutoFixes(code);
+            _analyzer.SetRevitVersion("2026");
+            var report = _analyzer.Analyze(@"
+public class Test { public void Run(Autodesk.Revit.DB.Parameter p, Autodesk.Revit.DB.Element e) {
+    int i = p.AsInteger(); var l = e.LevelId; } }");
+            Assert.DoesNotContain(report.Diagnostics, d => d.Id == "BIBIM004");
+        }
 
-            Assert.True(result.HasChanges);
-            Assert.Contains("get_Parameter", result.FixedCode);
-            Assert.Contains("WALL_BASE_CONSTRAINT", result.FixedCode);
+        [Theory]
+        [InlineData("2024", AnalyzerSeverity.Warning)]   // obsolete but compiles
+        [InlineData("2026", AnalyzerSeverity.Error)]     // removed
+        public void IntegerValue_Severity_FollowsTheApi(string version, AnalyzerSeverity expected)
+        {
+            _analyzer.SetRevitVersion(version);
+            var report = _analyzer.Analyze(@"
+public class Test { public void Run(Autodesk.Revit.DB.ElementId id) { int v = id.IntegerValue; } }");
+            Assert.Contains(report.Diagnostics, d => d.Id == "BIBIM004" && d.Severity == expected);
         }
 
         [Fact]
@@ -72,7 +84,7 @@ var collector = new FilteredElementCollector(doc)
         }
 
         [Fact]
-        public void Fix_MultipleIssues_AllFixed()
+        public void Fix_OnlyIntegerValue_IsRewritten()
         {
             string code = @"
 int val = param.IntegerValue;
@@ -80,9 +92,9 @@ var x = param2.AsInteger();";
             var result = _analyzer.ApplyAutoFixes(code);
 
             Assert.True(result.HasChanges);
-            Assert.Equal(2, result.AppliedFixes.Count);
-            Assert.Contains(".Value", result.FixedCode);
-            Assert.Contains(".AsValueString()", result.FixedCode);
+            Assert.Single(result.AppliedFixes);
+            Assert.Contains("param.Value", result.FixedCode);
+            Assert.Contains("param2.AsInteger()", result.FixedCode);
         }
     }
 }

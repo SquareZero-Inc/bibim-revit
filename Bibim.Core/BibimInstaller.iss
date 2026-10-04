@@ -44,6 +44,7 @@ Source: "bin\Release\2023\*"; DestDir: "{app}\2023"; Flags: ignoreversion recurs
 Source: "bin\Release\2022\*"; DestDir: "{app}\2022"; Flags: ignoreversion recursesubdirs skipifsourcedoesntexist
 Source: "redist\MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 Source: "Assets\Icons\bibim-icon-blue.ico"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\THIRD-PARTY-NOTICES.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "wwwroot\*"; DestDir: "{app}\wwwroot"; Flags: ignoreversion recursesubdirs
 Source: "Config\*"; DestDir: "{app}\Config"; Flags: ignoreversion recursesubdirs
 
@@ -170,7 +171,7 @@ begin
       '1. Revit을 실행하세요.' + #13#10 +
       '2. 상단 리본 메뉴에서 BIBIM 탭을 클릭하세요.' + #13#10 +
       '3. [Open BIBIM] 버튼을 눌러 패널을 열어주세요.' + #13#10 +
-      '4. 설정(⚙)에서 API 키(Anthropic·OpenAI·Gemini 중 선택)를 입력하면 바로 사용할 수 있습니다.' + #13#10 + #13#10 +
+      '4. 설정(⚙)에서 API 키(Anthropic 또는 OpenAI)를 입력하면 바로 사용할 수 있습니다.' + #13#10 + #13#10 +
       'Anthropic 키 발급: https://console.anthropic.com',
       mbInformation, MB_OK);
   end;

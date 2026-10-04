@@ -15,8 +15,10 @@ namespace Bibim.Core
     /// <summary>
     /// Execution request queued from background thread for main-thread execution.
     /// See design doc §2.3 — ExternalEvent main thread synchronization.
+    /// Partial: Revit-typed members live in ExecutionModels.Revit.cs so the test
+    /// project can link this file without referencing RevitAPI.dll.
     /// </summary>
-    public class ExecutionRequest
+    public partial class ExecutionRequest
     {
         public ExecutionRequestKind Kind { get; set; } = ExecutionRequestKind.ExecuteCode;
 
@@ -44,14 +46,28 @@ namespace Bibim.Core
 
     /// <summary>
     /// Result of code execution on the Revit main thread.
+    /// Partial: Revit-typed members live in ExecutionModels.Revit.cs so the test
+    /// project can link this file without referencing RevitAPI.dll.
     /// </summary>
-    public class ExecutionResult
+    public partial class ExecutionResult
     {
         public bool Success { get; set; }
         public string Output { get; set; }
         public string ErrorMessage { get; set; }
         public Exception Exception { get; set; }
         public int AffectedElementCount { get; set; }
+
+        /// <summary>DocumentChanged breakdown (an element counted once per bucket).</summary>
+        public int AddedCount { get; set; }
+        public int ModifiedCount { get; set; }
+        public int DeletedCount { get; set; }
+
+        /// <summary>
+        /// Integer ids of affected elements (capped), for the audit log. Plain longs so
+        /// this file stays free of RevitAPI types (the test project links it).
+        /// </summary>
+        public List<long> AffectedElementIds { get; set; }
+
         public long MemoryBefore { get; set; }
         public long MemoryAfter { get; set; }
         public string DocumentTitle { get; set; }
