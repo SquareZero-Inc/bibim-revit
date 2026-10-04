@@ -1,13 +1,20 @@
 // Copyright (c) 2026 SquareZero Inc. — Licensed under Apache 2.0. See LICENSE in the repo root.
+using System;
 using System.Linq;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
 namespace Bibim.Core.Tests
 {
-    // Attached-document input (spec: BIBIM_AI_MD첨부입력_긴급구현_명세서). Runs in the KR default
-    // language — AppLanguage is not switched here (it is process-wide).
+    // Attached-document input. AppLanguage is process-wide, so every class that asserts
+    // language-specific text runs in the non-parallel "AppLanguage" collection: the KR
+    // classes rely on the KR default and the EN class restores it after each test.
 
+    [CollectionDefinition("AppLanguage", DisableParallelization = true)]
+    public class AppLanguageCollection { }
+
+
+    [Collection("AppLanguage")]
     public class AttachedDocumentTests
     {
         private const string AgreedReport =
@@ -166,6 +173,7 @@ report: model-check
         }
     }
 
+    [Collection("AppLanguage")]
     public class AttachmentTableParserTests
     {
         [Fact]
@@ -257,6 +265,7 @@ report: model-check
         }
     }
 
+    [Collection("AppLanguage")]
     public class AttachmentScopeTests
     {
         [Fact]
@@ -292,6 +301,70 @@ report: model-check
             Assert.Null(AttachmentScope.Compare(new long[0], new[] { 1L }));
             Assert.Null(AttachmentScope.Compare(null, new[] { 1L }));
             Assert.Null(AttachmentScope.Describe(null));
+        }
+    }
+
+    [Collection("AppLanguage")]
+    public class AttachedDocumentEnglishTests : IDisposable
+    {
+        public AttachedDocumentEnglishTests() { AppLanguage.Initialize("en"); }
+        public void Dispose() { AppLanguage.Initialize("kr"); }
+
+        private const string Report =
+@"| Rule ID | ElementId | UniqueId | Category | Family/Type | Current value | Expected value |
+|---|---|---|---|---|---|---|
+| WS-01 | 312345 | u-1 | Walls | Basic Wall: Generic 200 | Shared Levels and Grids | Architecture |
+| WS-01 | 312346 | u-2 | Walls | Basic Wall: Generic 200 | Shared Levels and Grids | Architecture |";
+
+        [Fact]
+        public void EnglishHeaders_AreParsed()
+        {
+            var doc = AttachedDocument.Create("ws-report.md", Report);
+            Assert.Equal(2, doc.Targets.Count);
+            Assert.Equal("Architecture", doc.Targets[0].ExpectedValue);
+            Assert.Equal("Shared Levels and Grids", doc.Targets[0].CurrentValue);
+        }
+
+        [Fact]
+        public void Compose_UsesEnglishLabels_AndNoKorean()
+        {
+            var doc = AttachedDocument.Create("ws-report.md", Report);
+            string text = doc.ComposeForLlm("Fix the violations in this document");
+            Assert.StartsWith("[Attached document]", text);
+            Assert.Contains("File name: ws-report.md", text);
+            Assert.Contains("[Structured target list: 2]", text);
+            Assert.Contains("[User instruction]", text);
+            Assert.Equal("Fix the violations in this document", AttachedDocument.InstructionOf(text));
+            Assert.DoesNotMatch("[가-힣]", text);
+        }
+
+        [Fact]
+        public void Digest_And_Scope_AreEnglish()
+        {
+            var doc = AttachedDocument.Create("ws-report.md", Report);
+            string digest = doc.BuildPlanDigest();
+            Assert.Contains("**2 target element(s), rule WS-01**", digest);
+            Assert.Contains("Current 'Shared Levels and Grids' → expected 'Architecture' (2)", digest);
+            Assert.DoesNotMatch("[가-힣]", digest);
+
+            string scope = AttachmentScope.Describe(AttachmentScope.Compare(new[] { 1L, 2L }, new[] { 1L, 9L }));
+            Assert.StartsWith("⚠ Document scope: 1 of 2 listed element(s) changed, 1 outside the list", scope);
+        }
+
+        [Fact]
+        public void Truncation_Note_IsEnglish()
+        {
+            var doc = AttachedDocument.Create("big.txt", new string('a', AttachedDocument.MaxChars + 10));
+            Assert.Contains("[The document was long; the last 10 characters were omitted]", doc.ComposeForLlm("review"));
+        }
+
+        [Fact]
+        public void UserFacingErrors_AreEnglish()
+        {
+            string msg = LlmErrorPresenter.ToUserMessage(new Exception("Anthropic API 401: {\"error\":\"x\"}"));
+            Assert.Contains("API key", msg);
+            Assert.DoesNotMatch("[가-힣]", msg);
+            Assert.DoesNotMatch("[가-힣]", LlmErrorPresenter.RefusalMessage());
         }
     }
 }
